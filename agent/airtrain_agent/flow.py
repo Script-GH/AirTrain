@@ -264,6 +264,120 @@ def require_session(cfg: Config) -> bool:
     return False
 
 
+# ---------------- step 3: start training ----------------
+
+START_DEFAULTS = {
+    "rounds": 50, "steps": 100, "dataset": "cifar10", "no_idle_check": False,
+    "host": "0.0.0.0", "port": 0, "token": None, "no_server": False,
+}
+
+
+def _opt_arg(args: argparse.Namespace, name: str) -> Any:
+    return getattr(args, name, START_DEFAULTS[name])
+
+
+def print_progress_line(snap: dict[str, Any], apps: int) -> str:
+    p = snap["train"] or {}
+    acc = p.get("accuracy")
+    line = (
+        f"[{p.get('status', '?'):>8}] round {p.get('round', 0)}/{p.get('total_rounds', 0)}"
+        f"  loss {_opt(p.get('loss'), '{:.3f}')}  acc {_opt(acc and acc * 100, '{:.1f}%')}"
+        f"  {p.get('samples_per_s', 0):,.0f} samples/s"
+    )
+    if snap["blockers"]:
+        line += f"  waiting: {', '.join(snap['blockers'])}"
+    return line
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    import asyncio
+    import socket
+
+    from .cli import _qr, lan_ip
+    from .controller import Controller
+    from .jobs import get_job
+    from .trainer import TrainUnavailable
+
+    cfg, _ = load_config()
+    if not require_session(cfg):
+        return 2
+    job, sess = get_job(cfg.job), cfg.session
+    try:
+        ctrl = Controller(
+            cfg,
+            train=True,
+            rounds=_opt_arg(args, "rounds"),
+            dataset=_opt_arg(args, "dataset"),
+            require_idle=not _opt_arg(args, "no_idle_check"),
+            steps_per_round=_opt_arg(args, "steps"),
+            job=job.id,
+            batch_size=cfg.batch_size or job.batch_sizes[0],
+        )
+    except TrainUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    print(f"Training {job.name} for {sess['cluster_name']} ({sess['region']}, {sess['devices']} devices)")
+    print(f"  Batch {cfg.batch_size}, dataset {ctrl.trainer.dataset}, backend {cfg.profile.get('backend', '?').upper()}"
+          f", {'idle-gated' if ctrl.require_idle else 'no idle check'}")
+    host, port = _opt_arg(args, "host"), _opt_arg(args, "port") or cfg.port
+    token = _opt_arg(args, "token") or cfg.token
+    serve = not _opt_arg(args, "no_server")
+    if serve:
+        ip = lan_ip() if host in ("0.0.0.0", "") else host
+        url = f"ws://{ip}:{port}/?token={token}"
+        print(f"  Phone app  {url}")
+        print(f"  Token      {token}   (device {cfg.name or socket.gethostname()})")
+        _qr(url)
+    print("Ctrl+C to stop.", flush=True)
+
+    finished = asyncio.Event()
+    last: dict[str, Any] = {}
+
+    def on_snapshot(snap: dict[str, Any], apps: int) -> None:
+        line = print_progress_line(snap, apps)
+        if line != last.get("line"):
+            print(line, flush=True)
+            last["line"] = line
+        if (snap["train"] or {}).get("status") in ("done", "error", "stopped"):
+            last["final"] = snap["train"]
+            finished.set()
+
+    async def main() -> None:
+        from .server import run_server
+
+        if serve:
+            task = asyncio.create_task(run_server(ctrl, host, port, token, quiet=True, on_snapshot=on_snapshot))
+        else:
+            task = asyncio.create_task(ctrl.run(lambda s: on_snapshot(s, 0)))
+        waiter = asyncio.create_task(finished.wait())
+        done, _ = await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        for t in (task, waiter):
+            t.cancel()
+        if task in done and task.exception():
+            raise task.exception()
+
+    ctrl.start()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 0
+    except OSError as e:
+        print(f"error: could not start the telemetry server on {host}:{port}: {e}", file=sys.stderr)
+        return 1
+    finally:
+        ctrl.stop()
+    final = last.get("final") or {}
+    if final.get("error"):
+        print(f"error: {final['error']}", file=sys.stderr)
+        return 1
+    acc = final.get("accuracy")
+    print(f"Finished {final.get('round', 0)} rounds: loss {_opt(final.get('loss'), '{:.3f}')}, "
+          f"accuracy {_opt(acc and acc * 100, '{:.1f}%')}, {final.get('samples', 0):,} samples.")
+    return 0
+
+
 def add_parsers(sub: Any) -> None:
     s = sub.add_parser("analysis", help="step 1: profile this machine and pick a training job")
     s.add_argument("--job", help="job id to select without asking (e.g. cifar10-cnn)")
@@ -280,3 +394,25 @@ def add_parsers(sub: Any) -> None:
 
     s = sub.add_parser("disconnect", help="leave the current cluster")
     s.set_defaults(func=cmd_disconnect)
+
+    def start_opts(sp: argparse.ArgumentParser, suppress: bool) -> None:
+        d = (lambda k: argparse.SUPPRESS) if suppress else (lambda k: START_DEFAULTS[k])
+        sp.add_argument("--rounds", type=int, default=d("rounds"), help="training rounds (default 50)")
+        sp.add_argument("--steps", type=int, default=d("steps"), help="batches per round (default 100)")
+        sp.add_argument("--dataset", choices=["cifar10", "synthetic"], default=d("dataset"),
+                        help="synthetic skips downloads (jobs without a real dataset always use it)")
+        sp.add_argument("--no-idle-check", action="store_true", default=d("no_idle_check"),
+                        help="train even while the machine is in use (temperature limit still applies)")
+        sp.add_argument("--host", default=d("host"), help="telemetry server address (default 0.0.0.0)")
+        sp.add_argument("--port", type=int, default=d("port"), help="telemetry server port (default from config)")
+        sp.add_argument("--token", default=d("token"), help="override the pairing token for this run")
+        sp.add_argument("--no-server", action="store_true", default=d("no_server"),
+                        help="do not start the telemetry server for the phone app")
+
+    s = sub.add_parser("start", help="step 3: start training for the joined cluster (`airtrain start training`)")
+    start_opts(s, suppress=False)
+    s.set_defaults(func=cmd_start)
+    start_sub = s.add_subparsers(dest="start_what", metavar="{training}")
+    t = start_sub.add_parser("training", help="idle-aware training with live progress and phone telemetry")
+    start_opts(t, suppress=True)
+    t.set_defaults(func=cmd_start)

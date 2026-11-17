@@ -22,6 +22,8 @@ class Controller:
         dataset: str = "cifar10",
         require_idle: bool = True,
         steps_per_round: int = 100,
+        job: str = "cifar10-cnn",
+        batch_size: int = 64,
     ) -> None:
         self.cfg = cfg
         self.sampler = Sampler(cfg.gpu_index)
@@ -35,7 +37,12 @@ class Controller:
 
             check_available()
             self.trainer = Trainer(
-                config_dir() / "data", rounds=rounds, dataset=dataset, steps_per_round=steps_per_round
+                config_dir() / "data",
+                rounds=rounds,
+                dataset=dataset,
+                steps_per_round=steps_per_round,
+                job=job,
+                batch_size=batch_size,
             )
 
     def start(self) -> None:
