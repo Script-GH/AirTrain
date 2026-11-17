@@ -64,6 +64,24 @@ class Coordinator(ABC):
 
 ANY_JOB = "*"  # a flexible pool that trains whichever job its members pick
 
+# Approximate location of each region's data centers, used to place a cluster's coordinator on the map.
+REGION_COORDS: dict[str, tuple[float, float]] = {
+    "ap-south-1": (19.08, 72.88),  # Mumbai
+    "ap-south-2": (17.39, 78.49),  # Hyderabad
+    "ap-southeast-1": (1.35, 103.82),  # Singapore
+    "ap-southeast-2": (-33.87, 151.21),  # Sydney
+    "ap-northeast-1": (35.68, 139.69),  # Tokyo
+    "eu-central-1": (50.11, 8.68),  # Frankfurt
+    "eu-west-1": (53.35, -6.26),  # Dublin
+    "us-east-1": (39.04, -77.49),  # Ashburn
+    "us-west-2": (45.84, -119.70),  # Oregon
+    "sa-east-1": (-23.55, -46.63),  # Sao Paulo
+}
+
+
+def region_coords(region: str | None) -> tuple[float | None, float | None]:
+    return REGION_COORDS.get(region or "", (None, None))
+
 # id, name, region, city, typical latency from India in ms (used only when it cannot be measured)
 _MOCK_SITES = (
     ("blr-campus", "Bengaluru Campus Pool", "ap-south-1", "Bengaluru, IN", 18),

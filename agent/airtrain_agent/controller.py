@@ -138,6 +138,9 @@ class Controller:
         s = self.cfg.session
         if not s:
             return None
+        from .coordinator import region_coords
+
+        lat, lon = region_coords(s.get("region"))
         return {
             "id": s.get("cluster_id"),
             "name": s.get("cluster_name"),
@@ -146,6 +149,8 @@ class Controller:
             "devices": s.get("devices"),
             "latency_ms": s.get("latency_ms"),
             "coordinator": s.get("coordinator"),
+            "lat": s.get("lat", lat),
+            "lon": s.get("lon", lon),
         }
 
     async def run(self, on_snapshot: Callable[[dict[str, Any]], Awaitable[None] | None], interval: float = 1.0) -> None:
