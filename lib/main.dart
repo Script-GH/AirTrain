@@ -83,15 +83,18 @@ class Device {
     this.clock = 0,
     this.throttled = false,
     this.tempHistory = const [],
-    this.city = 'Bengaluru, IN',
-    this.lat = 12.97,
-    this.lon = 77.59,
+    this.city,
+    this.lat,
+    this.lon,
     this.linkId,
     this.fanUnit = 'rpm',
     this.cpuOnly = false,
   });
 
-  final String id, name, gpu, city;
+  final String id, name, gpu;
+
+  /// "City, CC" as reported by the agent; null when it does not know where it is.
+  final String? city;
 
   /// Set for devices reported by a paired PC agent; null for demo devices.
   final String? linkId;
@@ -100,7 +103,8 @@ class Device {
   /// No supported GPU: util/VRAM fields carry CPU load and system RAM instead.
   final bool cpuOnly;
 
-  final double lat, lon;
+  /// Map position; both null when the location (or its coordinates) is unknown.
+  final double? lat, lon;
   final IconData icon;
   final DeviceState state;
   final bool paused;
@@ -374,6 +378,18 @@ List<double> _push(List<double> l, double v) {
   return out;
 }
 
+/// Reads the agent's `location` block. Coordinates are only kept as a valid pair.
+({String? city, double? lat, double? lon}) locationFromTelemetry(Map<String, dynamic> t) {
+  final l = t['location'];
+  if (l is! Map) return (city: null, lat: null, lon: null);
+  String? str(Object? v) => v is String && v.trim().isNotEmpty ? v.trim() : null;
+  double? coord(Object? v, double limit) => v is num && v.isFinite && v.abs() <= limit ? v.toDouble() : null;
+  final parts = [str(l['city']), str(l['country'])].whereType<String>();
+  final lat = coord(l['lat'], 90), lon = coord(l['lon'], 180);
+  final hasPos = lat != null && lon != null;
+  return (city: parts.isEmpty ? null : parts.join(', '), lat: hasPos ? lat : null, lon: hasPos ? lon : null);
+}
+
 /// Maps one `telemetry` message from `airtrain serve` (schema in agent/README.md) to a [Device].
 Device deviceFromTelemetry(Map<String, dynamic> t, String linkId, Device? prev) {
   final dev = (t['device'] as Map?) ?? const {};
@@ -383,6 +399,7 @@ Device deviceFromTelemetry(Map<String, dynamic> t, String linkId, Device? prev) 
   final train = t['train'] as Map?;
   final limits = (t['limits'] as Map?) ?? const {};
   final hasGpu = g['available'] == true;
+  final loc = locationFromTelemetry(t);
 
   final util = hasGpu ? _n(g['util']) : _n(c['util']);
   final temp = hasGpu ? _n(g['temp_c']) : _n(c['temp_c']);
@@ -424,6 +441,9 @@ Device deviceFromTelemetry(Map<String, dynamic> t, String linkId, Device? prev) 
     samples: train == null ? 0 : _n(train['samples']).round(),
     history: _push(prev?.history ?? const [], util),
     tempHistory: _push(prev?.tempHistory ?? const [], temp),
+    city: loc.city,
+    lat: loc.lat,
+    lon: loc.lon,
   );
 }
 
@@ -487,6 +507,9 @@ class SwarmNotifier extends Notifier<SwarmState> {
           tempLimit: 83,
           powerLimit: 170,
           ramTotal: 16,
+          city: 'Bengaluru, IN',
+          lat: 12.97,
+          lon: 77.59,
         ),
         Device(
           id: 'mac',
@@ -498,6 +521,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
           powerLimit: 25,
           ramTotal: 8,
           hasFan: false,
+          city: 'Bengaluru, IN',
           lat: 12.90,
           lon: 77.66,
         ),
@@ -1575,8 +1599,9 @@ class _SparkPainter extends CustomPainter {
 /// One point on the map: either one of your devices or a peer.
 class NetNode {
   const NetNode(this.name, this.detail, this.city, this.lat, this.lon, this.state, this.latency, this.mine);
-  final String name, detail, city;
-  final double lat, lon;
+  final String name, detail;
+  final String? city;
+  final double? lat, lon;
   final DeviceState state;
   final int latency;
   final bool mine;
@@ -1615,7 +1640,11 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
     ];
     final live = nodes.where((n) => n.state != DeviceState.offline && n.latency > 0).toList();
     final avgLatency = live.isEmpty ? 0 : live.fold<int>(0, (a, n) => a + n.latency) ~/ live.length;
-    final countries = nodes.where((n) => n.state != DeviceState.offline).map((n) => n.city.split(', ').last).toSet();
+    final countries = nodes
+        .where((n) => n.state != DeviceState.offline)
+        .map((n) => n.city?.split(', ').last)
+        .nonNulls
+        .toSet();
     final sorted = [...nodes]..sort((a, b) => a.state.index.compareTo(b.state.index));
 
     return Scaffold(
@@ -1860,7 +1889,10 @@ class _NodeRow extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 2),
-                Text('${n.detail} · ${n.city}', style: const TextStyle(color: C.muted, fontSize: 12)),
+                Text(
+                  '${n.detail} · ${n.city ?? 'Location unknown'}',
+                  style: const TextStyle(color: C.muted, fontSize: 12),
+                ),
               ],
             ),
           ),
@@ -1914,7 +1946,9 @@ class _MapPainter extends CustomPainter {
 
     for (var k = 0; k < nodes.length; k++) {
       final n = nodes[k];
-      final p = _project(n.lat, n.lon, size);
+      final lat = n.lat, lon = n.lon;
+      if (lat == null || lon == null) continue; // listed below the map, not drawn
+      final p = _project(lat, lon, size);
       final color = stateColor(n.state);
       final mid = (p + hub) / 2;
       final d = hub - p;
