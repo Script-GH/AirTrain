@@ -45,7 +45,7 @@ class AirTrainApp extends StatelessWidget {
         scaffoldBackgroundColor: C.bg,
         colorScheme: const ColorScheme.dark(primary: C.accent, surface: C.card),
       ),
-      home: const HomeScreen(),
+      home: const MainShell(),
     );
   }
 }
@@ -107,11 +107,41 @@ class Device {
       );
 }
 
+class RoundLog {
+  const RoundLog(this.round, this.acc, this.loss, this.devices, this.samples);
+  final int round, devices, samples;
+  final double acc, loss;
+}
+
 class Job {
-  const Job({required this.round, required this.totalRounds, required this.acc});
+  const Job({
+    required this.round,
+    required this.totalRounds,
+    required this.acc,
+    required this.loss,
+    required this.log,
+    required this.startedAt,
+    this.throughput = 0,
+  });
   final int round, totalRounds;
-  final List<double> acc;
+  final List<double> acc, loss;
+  final List<RoundLog> log; // newest first
+  final DateTime startedAt;
+  final double throughput; // samples per second
   double get accuracy => acc.isEmpty ? 0 : acc.last;
+  double get bestAccuracy => acc.isEmpty ? 0 : acc.reduce((a, b) => a > b ? a : b);
+  double get currentLoss => loss.isEmpty ? 0 : loss.last;
+  double get progress => round / totalRounds;
+
+  Job copyWith({int? round, List<double>? acc, List<double>? loss, List<RoundLog>? log, double? throughput}) => Job(
+        round: round ?? this.round,
+        totalRounds: totalRounds,
+        acc: acc ?? this.acc,
+        loss: loss ?? this.loss,
+        log: log ?? this.log,
+        startedAt: startedAt,
+        throughput: throughput ?? this.throughput,
+      );
 }
 
 class SwarmState {
@@ -130,8 +160,8 @@ class SwarmNotifier extends Notifier<SwarmState> {
   SwarmState build() {
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _step());
     ref.onDispose(() => _timer?.cancel());
-    return const SwarmState(
-      [
+    return SwarmState(
+      const [
         Device(
           id: 'pc',
           name: 'Linux PC',
@@ -148,7 +178,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
           vramTotal: 8,
         ),
       ],
-      Job(round: 0, totalRounds: 50, acc: []),
+      Job(round: 0, totalRounds: 50, acc: const [], loss: const [], log: const [], startedAt: DateTime.now()),
     );
   }
 
@@ -174,11 +204,20 @@ class SwarmNotifier extends Notifier<SwarmState> {
       );
     }).toList();
 
-    var job = state.job;
+    int sum(List<Device> l) => l.fold<int>(0, (a, d) => a + d.samples);
+    final total = sum(devices);
+    var job = state.job.copyWith(throughput: (total - sum(state.devices)).toDouble());
     if (devices.any((d) => d.active) && _tick % 4 == 0 && job.round < job.totalRounds) {
       final r = job.round + 1;
       final a = 0.86 * (1 - exp(-r / 10)) + (_rng.nextDouble() - 0.5) * 0.01;
-      job = Job(round: r, totalRounds: job.totalRounds, acc: [...job.acc, a]);
+      final l = 2.3 * exp(-r / 12) + 0.35 + (_rng.nextDouble() - 0.5) * 0.04;
+      final n = devices.where((d) => d.active).length;
+      job = job.copyWith(
+        round: r,
+        acc: [...job.acc, a],
+        loss: [...job.loss, l],
+        log: [RoundLog(r, a, l, n, total), ...job.log],
+      );
     }
     state = SwarmState(devices, job);
   }
@@ -194,6 +233,269 @@ class SwarmNotifier extends Notifier<SwarmState> {
 final swarmProvider = NotifierProvider<SwarmNotifier, SwarmState>(SwarmNotifier.new);
 
 // ---------- UI ----------
+class MainShell extends StatefulWidget {
+  const MainShell({super.key});
+  @override
+  State<MainShell> createState() => _MainShellState();
+}
+
+class _MainShellState extends State<MainShell> {
+  int _i = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(index: _i, children: const [HomeScreen(), TrainingScreen()]),
+      bottomNavigationBar: Container(
+        decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.border))),
+        child: NavigationBar(
+          backgroundColor: C.bg,
+          indicatorColor: C.accent.withValues(alpha: 0.18),
+          height: 64,
+          selectedIndex: _i,
+          onDestinationSelected: (i) => setState(() => _i = i),
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          destinations: const [
+            NavigationDestination(
+                icon: Icon(Icons.grid_view_outlined), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Overview'),
+            NavigationDestination(
+                icon: Icon(Icons.insights_outlined), selectedIcon: Icon(Icons.insights_rounded), label: 'Training'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String pct(double v) => '${(v * 100).toStringAsFixed(1)}%';
+
+String fmtDur(Duration d) {
+  final h = d.inHours, m = d.inMinutes % 60, s = d.inSeconds % 60;
+  return h > 0 ? '${h}h ${m}m' : '${m}m ${s.toString().padLeft(2, '0')}s';
+}
+
+class TrainingScreen extends ConsumerWidget {
+  const TrainingScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final job = ref.watch(swarmProvider).job;
+    final elapsed = DateTime.now().difference(job.startedAt);
+    final done = job.round >= job.totalRounds;
+    final eta = job.round == 0 ? null : elapsed * ((job.totalRounds - job.round) / job.round);
+
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+          children: [
+            const Text('Training',
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5)),
+            const SizedBox(height: 2),
+            const Text('CIFAR-10 CNN · FedAvg', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: cardDeco,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 112,
+                    height: 112,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox.expand(
+                          child: TweenAnimationBuilder<double>(
+                            tween: Tween(end: job.progress),
+                            duration: const Duration(milliseconds: 500),
+                            builder: (_, v, _) => CircularProgressIndicator(
+                              value: v,
+                              strokeWidth: 8,
+                              strokeCap: StrokeCap.round,
+                              backgroundColor: C.border,
+                              color: done ? C.green : C.accent,
+                            ),
+                          ),
+                        ),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('${(job.progress * 100).toStringAsFixed(0)}%',
+                                style: const TextStyle(
+                                    color: C.text, fontSize: 24, fontWeight: FontWeight.w700, fontFeatures: tabular)),
+                            Text(done ? 'done' : 'trained', style: const TextStyle(color: C.muted, fontSize: 11)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        KV('Round', '${job.round} / ${job.totalRounds}'),
+                        KV('Elapsed', fmtDur(elapsed)),
+                        KV('ETA', done ? 'Complete' : eta == null ? '--' : fmtDur(eta)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(children: [
+              MetricTile(label: 'Accuracy', value: pct(job.accuracy)),
+              const SizedBox(width: 12),
+              MetricTile(label: 'Best', value: pct(job.bestAccuracy)),
+            ]),
+            const SizedBox(height: 12),
+            Row(children: [
+              MetricTile(label: 'Loss', value: job.currentLoss.toStringAsFixed(3)),
+              const SizedBox(width: 12),
+              MetricTile(label: 'Throughput', value: '${fmt(job.throughput.round())}/s'),
+            ]),
+            const SizedBox(height: 12),
+            ChartCard(title: 'Accuracy', value: pct(job.accuracy), data: job.acc, max: 1, color: C.accent),
+            const SizedBox(height: 12),
+            ChartCard(
+                title: 'Loss', value: job.currentLoss.toStringAsFixed(3), data: job.loss, max: 2.7, color: C.amber),
+            const SizedBox(height: 28),
+            const Text('RECENT ROUNDS',
+                style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
+            const SizedBox(height: 12),
+            Container(
+              decoration: cardDeco,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: job.log.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Center(child: Text('Waiting for first round', style: TextStyle(color: C.muted))),
+                    )
+                  : Column(
+                      children: [
+                        const _RoundRow(cells: ['Round', 'Accuracy', 'Loss', 'Devices'], header: true),
+                        for (final r in job.log.take(8))
+                          _RoundRow(cells: [
+                            '#${r.round}',
+                            pct(r.acc),
+                            r.loss.toStringAsFixed(3),
+                            '${r.devices}',
+                          ]),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class KV extends StatelessWidget {
+  const KV(this.k, this.v, {super.key});
+  final String k, v;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Text(k, style: const TextStyle(color: C.muted, fontSize: 13)),
+          const Spacer(),
+          Text(v,
+              style: const TextStyle(
+                  color: C.text, fontSize: 14, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+        ],
+      ),
+    );
+  }
+}
+
+class MetricTile extends StatelessWidget {
+  const MetricTile({super.key, required this.label, required this.value});
+  final String label, value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: cardDeco,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
+            const SizedBox(height: 6),
+            Text(value,
+                style: const TextStyle(
+                    color: C.text, fontSize: 22, fontWeight: FontWeight.w700, fontFeatures: tabular)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ChartCard extends StatelessWidget {
+  const ChartCard(
+      {super.key, required this.title, required this.value, required this.data, required this.max, required this.color});
+  final String title, value;
+  final List<double> data;
+  final double max;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: cardDeco,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(title, style: const TextStyle(color: C.text, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Sparkline(data: data, max: max, color: color, height: 110),
+        ],
+      ),
+    );
+  }
+}
+
+class _RoundRow extends StatelessWidget {
+  const _RoundRow({required this.cells, this.header = false});
+  final List<String> cells;
+  final bool header;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      color: header ? C.muted : C.text,
+      fontSize: header ? 12 : 14,
+      fontWeight: header ? FontWeight.w500 : FontWeight.w500,
+      fontFeatures: tabular,
+    );
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      decoration: header ? null : const BoxDecoration(border: Border(top: BorderSide(color: C.border))),
+      child: Row(
+        children: [
+          SizedBox(width: 56, child: Text(cells[0], style: style)),
+          Expanded(child: Text(cells[1], style: style)),
+          Expanded(child: Text(cells[2], style: style)),
+          SizedBox(width: 56, child: Text(cells[3], style: style, textAlign: TextAlign.right)),
+        ],
+      ),
+    );
+  }
+}
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
