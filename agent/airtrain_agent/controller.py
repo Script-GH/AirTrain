@@ -95,7 +95,34 @@ class Controller:
                 "idle_minutes": self.cfg.idle_minutes,
                 "min_battery_pct": self.cfg.min_battery_pct,
             },
+            "job": self._job_info(),
+            "cluster": self._cluster_info(),
             "train": self.trainer.progress() if self.trainer else None,
+        }
+
+    def _job_info(self) -> dict[str, Any] | None:
+        if not self.cfg.job:
+            return None
+        from .jobs import get_job
+
+        try:
+            name = get_job(self.cfg.job).name
+        except KeyError:
+            name = self.cfg.job
+        return {"id": self.cfg.job, "name": name, "batch_size": self.cfg.batch_size or None}
+
+    def _cluster_info(self) -> dict[str, Any] | None:
+        s = self.cfg.session
+        if not s:
+            return None
+        return {
+            "id": s.get("cluster_id"),
+            "name": s.get("cluster_name"),
+            "region": s.get("region"),
+            "city": s.get("city"),
+            "devices": s.get("devices"),
+            "latency_ms": s.get("latency_ms"),
+            "coordinator": s.get("coordinator"),
         }
 
     async def run(self, on_snapshot: Callable[[dict[str, Any]], Awaitable[None] | None], interval: float = 1.0) -> None:
