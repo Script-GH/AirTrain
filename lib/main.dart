@@ -68,6 +68,16 @@ class Device {
     this.power = 5,
     this.history = const [],
     this.samples = 0,
+    required this.tempLimit,
+    required this.powerLimit,
+    required this.ramTotal,
+    this.hasFan = true,
+    this.cpu = 0,
+    this.ram = 0,
+    this.fan = 0,
+    this.clock = 0,
+    this.throttled = false,
+    this.tempHistory = const [],
   });
 
   final String id, name, gpu;
@@ -77,6 +87,22 @@ class Device {
   final double util, vramUsed, vramTotal, temp, power;
   final List<double> history;
   final int samples;
+  final double tempLimit, powerLimit, ramTotal;
+  final bool hasFan;
+  final double cpu, ram, clock;
+  final int fan;
+  final bool throttled;
+  final List<double> tempHistory;
+
+  /// 0-100 composite load score from GPU load, heat, power draw and memory pressure.
+  double get stress {
+    final t = ((temp - 35) / (tempLimit - 35)).clamp(0.0, 1.0) * 100;
+    final p = (power / powerLimit).clamp(0.0, 1.0) * 100;
+    final m = (vramUsed / vramTotal).clamp(0.0, 1.0) * 100;
+    return (0.35 * util + 0.35 * t + 0.2 * p + 0.1 * m).clamp(0.0, 100.0);
+  }
+
+  double get headroom => tempLimit - temp;
 
   bool get active => state == DeviceState.training && !paused;
 
@@ -89,6 +115,12 @@ class Device {
     double? power,
     List<double>? history,
     int? samples,
+    double? cpu,
+    double? ram,
+    int? fan,
+    double? clock,
+    bool? throttled,
+    List<double>? tempHistory,
   }) =>
       Device(
         id: id,
@@ -104,6 +136,16 @@ class Device {
         power: power ?? this.power,
         history: history ?? this.history,
         samples: samples ?? this.samples,
+        tempLimit: tempLimit,
+        powerLimit: powerLimit,
+        ramTotal: ramTotal,
+        hasFan: hasFan,
+        cpu: cpu ?? this.cpu,
+        ram: ram ?? this.ram,
+        fan: fan ?? this.fan,
+        clock: clock ?? this.clock,
+        throttled: throttled ?? this.throttled,
+        tempHistory: tempHistory ?? this.tempHistory,
       );
 }
 
@@ -169,6 +211,9 @@ class SwarmNotifier extends Notifier<SwarmState> {
           icon: Icons.desktop_windows_rounded,
           vramTotal: 8,
           state: DeviceState.training,
+          tempLimit: 83,
+          powerLimit: 170,
+          ramTotal: 16,
         ),
         Device(
           id: 'mac',
@@ -176,6 +221,10 @@ class SwarmNotifier extends Notifier<SwarmState> {
           gpu: 'Apple Silicon · MPS',
           icon: Icons.laptop_mac_rounded,
           vramTotal: 8,
+          tempLimit: 95,
+          powerLimit: 25,
+          ramTotal: 8,
+          hasFan: false,
         ),
       ],
       Job(round: 0, totalRounds: 50, acc: const [], loss: const [], log: const [], startedAt: DateTime.now()),
@@ -190,10 +239,21 @@ class SwarmNotifier extends Notifier<SwarmState> {
       final active = s == DeviceState.training && !d.paused;
       final target = active ? 88 + _rng.nextDouble() * 10 : 2 + _rng.nextDouble() * 4;
       final util = d.util + (target - d.util) * 0.5;
-      final temp = d.temp + ((active ? 72 : 42) - d.temp) * 0.1 + _rng.nextDouble() - 0.5;
+      final hotTarget = d.hasFan ? 72.0 : 84.0; // fanless laptops run hotter
+      final temp = d.temp + ((active ? hotTarget : 42) - d.temp) * 0.1 + _rng.nextDouble() - 0.5;
       final history = [...d.history, util];
       if (history.length > 40) history.removeAt(0);
+      final tempHistory = [...d.tempHistory, temp];
+      if (tempHistory.length > 40) tempHistory.removeAt(0);
+      final throttled = temp > d.tempLimit - 3;
+      final baseClock = d.hasFan ? 1950.0 : 1400.0;
       return d.copyWith(
+        cpu: active ? 35 + _rng.nextDouble() * 20 : 4 + _rng.nextDouble() * 6,
+        ram: d.ramTotal * (active ? 0.68 : 0.42) + _rng.nextDouble() * 0.2,
+        fan: d.hasFan ? (active ? 1700 + ((temp - 40) * 25).round() + _rng.nextInt(80) : 900 + _rng.nextInt(60)) : 0,
+        clock: active ? baseClock * (throttled ? 0.82 : 1.0) - _rng.nextDouble() * 30 : 300 + _rng.nextDouble() * 40,
+        throttled: active && throttled,
+        tempHistory: tempHistory,
         state: s,
         util: util,
         temp: temp,
@@ -245,7 +305,7 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _i, children: const [HomeScreen(), TrainingScreen()]),
+      body: IndexedStack(index: _i, children: const [HomeScreen(), TrainingScreen(), HealthScreen()]),
       bottomNavigationBar: Container(
         decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.border))),
         child: NavigationBar(
@@ -260,6 +320,10 @@ class _MainShellState extends State<MainShell> {
                 icon: Icon(Icons.grid_view_outlined), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Overview'),
             NavigationDestination(
                 icon: Icon(Icons.insights_outlined), selectedIcon: Icon(Icons.insights_rounded), label: 'Training'),
+            NavigationDestination(
+                icon: Icon(Icons.monitor_heart_outlined),
+                selectedIcon: Icon(Icons.monitor_heart_rounded),
+                label: 'Health'),
           ],
         ),
       ),
@@ -390,6 +454,202 @@ class TrainingScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+(String, Color) stressLevel(double s) => s < 40
+    ? ('Low', C.green)
+    : s < 65
+        ? ('Moderate', C.accent)
+        : s < 85
+            ? ('High', C.amber)
+            : ('Critical', C.red);
+
+class HealthScreen extends ConsumerWidget {
+  const HealthScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final devices = ref.watch(swarmProvider).devices;
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+          children: [
+            const Text('Device health',
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5)),
+            const SizedBox(height: 2),
+            const Text('How hard each device is working', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 20),
+            for (final d in devices)
+              Padding(padding: const EdgeInsets.only(bottom: 16), child: HealthCard(device: d)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class HealthCard extends ConsumerWidget {
+  const HealthCard({super.key, required this.device});
+  final Device device;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final d = device;
+    final (label, color) = stressLevel(d.stress);
+    final tempColor = d.headroom < 5 ? C.red : d.headroom < 15 ? C.amber : C.green;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: cardDeco,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(d.icon, color: C.text, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Text(d.name, style: const TextStyle(color: C.text, fontWeight: FontWeight.w600))),
+              if (d.throttled) ...[
+                const StatusPill(label: 'Throttling', color: C.red),
+                const SizedBox(width: 6),
+              ],
+              StatusPill(label: label, color: color),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              SizedBox(
+                width: 120,
+                height: 100,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(end: d.stress),
+                  duration: const Duration(milliseconds: 600),
+                  builder: (_, v, _) => CustomPaint(
+                    painter: _GaugePainter(v / 100, stressLevel(v).$2),
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 34),
+                      child: Column(
+                        children: [
+                          Text(v.toStringAsFixed(0),
+                              style: const TextStyle(
+                                  color: C.text, fontSize: 28, fontWeight: FontWeight.w700, fontFeatures: tabular)),
+                          const Text('stress', style: TextStyle(color: C.muted, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  children: [
+                    LoadBar(label: 'GPU', value: d.util / 100, text: '${d.util.toStringAsFixed(0)}%'),
+                    LoadBar(label: 'CPU', value: d.cpu / 100, text: '${d.cpu.toStringAsFixed(0)}%'),
+                    LoadBar(
+                        label: 'VRAM',
+                        value: d.vramUsed / d.vramTotal,
+                        text: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G'),
+                    LoadBar(
+                        label: 'RAM',
+                        value: d.ram / d.ramTotal,
+                        text: '${d.ram.toStringAsFixed(1)}/${d.ramTotal.toStringAsFixed(0)}G'),
+                    LoadBar(
+                        label: 'Power',
+                        value: d.power / d.powerLimit,
+                        text: '${d.power.toStringAsFixed(0)}/${d.powerLimit.toStringAsFixed(0)}W'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Text('Temperature', style: TextStyle(color: C.muted, fontSize: 12)),
+              const Spacer(),
+              Text('${d.temp.toStringAsFixed(0)}°C',
+                  style: TextStyle(color: tempColor, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+              Text('  /  limit ${d.tempLimit.toStringAsFixed(0)}°C',
+                  style: const TextStyle(color: C.muted, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Sparkline(data: d.tempHistory, max: d.tempLimit + 5, color: tempColor, height: 56),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Stat(label: 'Headroom', value: '${d.headroom.toStringAsFixed(0)}°C'),
+              Stat(label: 'Clock', value: '${d.clock.toStringAsFixed(0)} MHz'),
+              Stat(label: 'Fan', value: d.hasFan ? '${d.fan} rpm' : 'Fanless'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class LoadBar extends StatelessWidget {
+  const LoadBar({super.key, required this.label, required this.value, required this.text});
+  final String label, text;
+  final double value;
+
+  @override
+  Widget build(BuildContext context) {
+    final v = value.clamp(0.0, 1.0);
+    final color = v > 0.9 ? C.red : v > 0.75 ? C.amber : C.accent;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(width: 44, child: Text(label, style: const TextStyle(color: C.muted, fontSize: 12))),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(end: v),
+                duration: const Duration(milliseconds: 500),
+                builder: (_, x, _) =>
+                    LinearProgressIndicator(value: x, minHeight: 5, backgroundColor: C.border, color: color),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 64,
+            child: Text(text,
+                textAlign: TextAlign.right,
+                style: const TextStyle(color: C.text, fontSize: 12, fontFeatures: tabular)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GaugePainter extends CustomPainter {
+  _GaugePainter(this.value, this.color);
+  final double value;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const start = pi * 0.75, sweep = pi * 1.5;
+    final r = min(size.width, size.height * 1.2) / 2 - 6;
+    final rect = Rect.fromCircle(center: Offset(size.width / 2, r + 6), radius: r);
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 9
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(rect, start, sweep, false, base..color = C.border);
+    canvas.drawArc(rect, start, sweep * value.clamp(0.0, 1.0), false, base..color = color);
+  }
+
+  @override
+  bool shouldRepaint(covariant _GaugePainter old) => old.value != value || old.color != color;
 }
 
 class KV extends StatelessWidget {
