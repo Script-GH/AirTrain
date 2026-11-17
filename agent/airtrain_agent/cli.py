@@ -3,13 +3,27 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import socket
 import sys
 import time
 from typing import Any
 
 from . import __version__
-from .config import load_config
+from .config import config_dir, load_config
+
+
+def lan_ip() -> str:
+    """Best guess at this machine's LAN address (no packets are sent)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
 
 
 def _fmt(v: Any, unit: str = "", nd: int = 0) -> str:
@@ -74,6 +88,37 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    from .controller import Controller
+    from .server import run_server
+
+    cfg, created = load_config()
+    ctrl = Controller(cfg)
+    token = args.token or cfg.token
+    port = args.port or cfg.port
+    ip = lan_ip() if args.host in ("0.0.0.0", "") else args.host
+    url = f"ws://{ip}:{port}/?token={token}"
+    if created:
+        print(f"First run: created config in {config_dir()}")
+    print(f"AirTrain agent {__version__} on {cfg.name or socket.gethostname()}")
+    print(f"  GPU      {ctrl.sampler.gpu().get('name') or 'none (CPU only)'}")
+    print(f"  Listen   {args.host}:{port}")
+    print(f"  LAN IP   {ip}")
+    print(f"  Token    {token}")
+    print(f"  App URL  {url}")
+    print("In the app: Overview > + > paste the URL (or host:port and token). Ctrl+C to stop.", flush=True)
+    try:
+        asyncio.run(run_server(ctrl, args.host, port, token, quiet=args.quiet))
+    except KeyboardInterrupt:
+        pass
+    except OSError as e:
+        print(f"error: could not listen on {args.host}:{port}: {e}", file=sys.stderr)
+        return 1
+    finally:
+        ctrl.stop()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="airtrain", description="AirTrain device agent")
     p.add_argument("--version", action="version", version=f"airtrain {__version__}")
@@ -82,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="print a one-shot hardware and idle snapshot")
     s.add_argument("--json", action="store_true", help="print the raw telemetry JSON")
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("serve", help="stream telemetry to the phone app over WebSocket")
+    s.add_argument("--host", default="0.0.0.0")
+    s.add_argument("--port", type=int, default=0, help="default from config (8765)")
+    s.add_argument("--token", help="override the pairing token for this run")
+    s.add_argument("--quiet", action="store_true", help="do not log connections")
+    s.set_defaults(func=cmd_serve)
     return p
 
 
