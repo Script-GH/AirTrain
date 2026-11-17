@@ -67,3 +67,17 @@ Settings:
 | `resume_temp_margin_c` | 5 | Resume once the temperature is this far below `max_temp_c` |
 | `min_battery_pct` | 50 | On battery below this, the device counts as busy |
 | `gpu_busy_util` | 30 | Another process using the GPU above this % makes the device busy |
+
+## When it trains
+
+Training runs only while none of these blockers apply. The app shows them as "In use":
+
+- **User active.** The last keyboard or mouse input was less than `idle_minutes` ago. On Windows this comes from `GetLastInputInfo`. On Linux it comes from `xprintidle`, then GNOME Mutter, then terminal activity (the same source `w` uses). If none of those are available, the agent relies on the GPU and battery checks alone.
+- **Another process is using the GPU.** NVML reports another compute process while utilization is above `gpu_busy_util`, or the GPU is busy before training has started (a game, for example).
+- **On battery** below `min_battery_pct`.
+- **Too hot.** The temperature has reached `max_temp_c`.
+- **Paused** from the phone app.
+
+The trainer checks these between batches, so it stops within a fraction of a second when you come back, and resumes once the machine has been idle for `idle_minutes` again.
+
+Training is currently a single-device stub: a small CNN on CIFAR-10, using CUDA if available and otherwise the CPU. Federated rounds through the coordinator and Flower come next (see `TODO(coordinator)` in `airtrain_agent/trainer.py`).
