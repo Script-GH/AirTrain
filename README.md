@@ -4,17 +4,18 @@ Pool idle GPU and SoC compute across laptops and desktops to collaboratively tra
 
 ## Status
 - Phone dashboard: Overview, Training, Health and Network tabs. Shows demo data until a PC agent is paired, then live data.
-- PC agent (`agent/`, Windows and Linux): live GPU/CPU/RAM telemetry, idle detection, local CIFAR-10 training, pause/resume from the phone. See [agent/README.md](agent/README.md).
+- PC agent (`agent/`, Windows and Linux): analysis -> connect -> start training flow, live GPU/CPU/RAM telemetry, idle detection, local training, pause/resume from the phone. See [agent/README.md](agent/README.md).
 - Coordinator and federated rounds: next.
 
-## Quick start: agent
+## Quick start: agent in three steps
 ```bash
 python3 -m venv .venv && source .venv/bin/activate   # Windows: py -3 -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install "./agent[train]"
-airtrain status
-airtrain serve --train      # prints the ws:// URL and token to paste into the app
+airtrain analysis          # 1. profile this machine and pick a job (CIFAR-10 CNN, tiny GPT, ResNet-18)
+airtrain connect           # 2. join the best-ranked cluster for that job
+airtrain start training    # 3. train while idle; prints the ws:// URL and token for the phone app
 ```
-In the app, tap the link button on Overview and paste the URL.
+In the app, tap the link button on Overview and paste the URL. Details: [agent/README.md](agent/README.md).
 
 ## Features
 - Live job card with an accuracy curve, round progress and total samples
