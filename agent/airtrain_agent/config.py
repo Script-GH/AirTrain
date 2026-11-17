@@ -7,7 +7,7 @@ import os
 import secrets
 import sys
 import uuid
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -39,6 +39,13 @@ class Config:
     resume_temp_margin_c: float = 5.0  # resume once temp is this far below max_temp_c
     min_battery_pct: float = 50.0  # on battery below this, the device is busy
     gpu_busy_util: float = 30.0  # another process using the GPU above this % makes it busy
+    region: str = ""  # e.g. ap-south-1; guessed from the time zone when empty
+    # Step 1, `airtrain analysis`: the chosen job, its batch size and the machine profile it was based on.
+    job: str = ""
+    batch_size: int = 0
+    profile: dict = field(default_factory=dict)
+    # Step 2, `airtrain connect`: the cluster this device joined.
+    session: dict = field(default_factory=dict)
 
     @property
     def path(self) -> Path:
@@ -55,8 +62,8 @@ class Config:
 
     def set(self, key: str, value: str) -> None:
         types = {f.name: f.type for f in fields(self)}
-        if key not in types or key == "device_id":
-            raise KeyError(key)
+        if key not in types or key in ("device_id", "job", "batch_size", "profile", "session"):
+            raise KeyError(key)  # managed by `analysis` and `connect`
         current = getattr(self, key)
         if isinstance(current, bool):
             setattr(self, key, value.lower() in ("1", "true", "yes", "on"))
