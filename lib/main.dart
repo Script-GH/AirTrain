@@ -1632,7 +1632,10 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
+                              Text(
+                                training == 1 ? 'device training now' : 'devices training now',
+                                style: const TextStyle(color: C.muted, fontSize: 12),
+                              ),
                             ],
                           ),
                         ),
@@ -1950,7 +1953,7 @@ class _NodeRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${n.detail} · ${n.city ?? 'Location unknown'}',
+                  '${n.city ?? 'Location unknown'} · ${n.detail}',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: C.muted, fontSize: 12),
                 ),
