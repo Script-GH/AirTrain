@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace as NS
 from unittest import mock
 
 from airtrain_agent import idle, telemetry
-from airtrain_agent.config import Config
+from airtrain_agent.config import Config, load_config
 
 
 def fake_pynvml(fail_fan: bool = True) -> types.ModuleType:
@@ -122,6 +124,17 @@ class IdleRules(unittest.TestCase):
         self.assertTrue(r["too_hot"])
         self.assertTrue(self.run_eval(600, snap(temp=80), hot=True)["too_hot"])  # still latched
         self.assertFalse(self.run_eval(600, snap(temp=77), hot=True)["too_hot"])
+
+
+class ConfigFile(unittest.TestCase):
+    def test_first_run_creates_token(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"AIRTRAIN_HOME": d}):
+            cfg, created = load_config()
+            self.assertTrue(created)
+            self.assertTrue(cfg.token)
+            again, created2 = load_config()
+            self.assertFalse(created2)
+            self.assertEqual(again.token, cfg.token)
 
 
 if __name__ == "__main__":
