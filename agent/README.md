@@ -84,6 +84,10 @@ Optional extras:
 
 | Command | What it does |
 | --- | --- |
+| `airtrain analysis [--job ID]` | Step 1: profile the machine, estimate each job's needs and pick one. |
+| `airtrain connect` | Step 2: rank clusters for the chosen job and join the best one. |
+| `airtrain disconnect` | Leave the current cluster. |
+| `airtrain start training` | Step 3: train for the joined cluster with a live view and the phone server running. |
 | `airtrain status` | One-shot snapshot: device, OS, GPU, utilization, VRAM, temperature and limits, power and power limit, fan, clocks, throttle reasons, CPU, RAM, battery, idle state. Add `--json` for the raw telemetry. |
 | `airtrain serve` | Starts the WebSocket server for the phone app and prints the LAN IP, token and `ws://` URL. Options: `--host 0.0.0.0`, `--port 8765`, `--token TOKEN`, `--train`, `--quiet`. |
 | `airtrain serve --train` | Same, and also trains whenever the machine is idle. Training progress is included in the stream. |
@@ -102,6 +106,7 @@ Settings:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `name` | hostname | Device name shown in the app |
+| `region` | from time zone | Your region for cluster ranking, e.g. `ap-south-1` |
 | `port` | 8765 | Default port for `serve` |
 | `gpu_index` | 0 | Which NVIDIA GPU to monitor |
 | `idle_minutes` | 5 | No keyboard or mouse input for this long counts as idle |
@@ -212,6 +217,16 @@ Any sensor the machine does not expose is `null`. Units are in the field names.
   "paused": false,
   "uptime_s": 120,
   "limits": {"max_temp_c": 83.0, "idle_minutes": 5.0, "min_battery_pct": 50.0},
+  "job": {"id": "cifar10-cnn", "name": "CIFAR-10 CNN", "batch_size": 512},
+  "cluster": {
+    "id": "blr-campus-cifar10-cnn",
+    "name": "Bengaluru Campus Pool",
+    "region": "ap-south-1",
+    "city": "Bengaluru, IN",
+    "devices": 9,
+    "latency_ms": 18.4,
+    "coordinator": "mock"
+  },
   "train": {
     "status": "running",
     "round": 2,
@@ -223,6 +238,8 @@ Any sensor the machine does not expose is `null`. Units are in the field names.
     "samples": 19200,
     "samples_per_s": 2400.0,
     "device": "cuda:NVIDIA GeForce RTX 3060",
+    "job": "cifar10-cnn",
+    "batch_size": 512,
     "dataset": "cifar10",
     "history": [{"round": 1, "loss": 2.01, "accuracy": 0.27, "samples": 6400}],
     "error": null
@@ -234,6 +251,7 @@ Field notes:
 - `gpu.available` is `false` when no NVIDIA GPU or driver is found. `gpu.reason` then says why, and every other GPU field is absent.
 - `state` is one of `training`, `idle` or `busy`. `blockers` lists why the device is busy.
 - `throttle_reasons` values: `gpu_idle`, `app_clock_setting`, `sw_power_cap`, `hw_slowdown`, `sync_boost`, `sw_thermal`, `hw_thermal`, `hw_power_brake`, `display_clock`. `throttled` is true when any power or thermal reason is active.
+- `job` is `null` until `airtrain analysis` has run, and `cluster` is `null` until `airtrain connect`.
 - `train` is `null` unless the agent runs with `--train`. `train.status` is one of `starting`, `loading`, `waiting`, `running`, `done`, `error` or `stopped`. `history` holds the last 50 rounds.
 
 How the app maps it to a device card: GPU `util`, `vram_*`, `temp_c`, `power_w`, `fan_pct` and `clock_mhz` fill the card directly. Without a GPU, the card shows CPU load and system RAM instead. `train.samples` becomes the device's share of work, and the training tab reads `train.history`.
@@ -286,11 +304,15 @@ pip install -e ./agent
 python -m unittest discover -s agent/tests -v                    # no GPU needed; NVML is faked
 python agent/tests/smoke_ws.py                                   # serve + client + pause/resume
 python agent/tests/smoke_ws.py --train --dataset synthetic       # with the trainer (needs [train])
+python agent/tests/smoke_flow.py                                 # analysis -> connect -> start training (needs [train])
 ```
 
 ## Limitations
 
 - GPU telemetry and CUDA training cover NVIDIA only. AMD and Intel GPUs fall back to CPU and RAM reporting and CPU training.
 - macOS is not supported yet.
+- `connect` uses a local mock coordinator. Its clusters are generated, but the latency to each region is measured for real.
+- `char-gpt-tiny` and `resnet18-ft` train on generated data until Tiny Shakespeare and Imagenette loaders land.
+- Throughput numbers in `analysis` are estimates, from the benchmark or the GPU spec table. Measured speed shows in `start training`.
 - Training runs locally on each machine. Federated averaging through the coordinator is the next step.
 - Traffic is plain `ws://` on the LAN, protected by the pairing token. Do not expose the port to the internet.
