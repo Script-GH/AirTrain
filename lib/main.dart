@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'world_mask.dart';
 
 void main() => runApp(const ProviderScope(child: AirTrainApp()));
 
@@ -29,8 +32,8 @@ const tabular = [FontFeature.tabularFigures()];
 String fmt(int n) => n >= 1e6
     ? '${(n / 1e6).toStringAsFixed(1)}M'
     : n >= 1e3
-        ? '${(n / 1e3).toStringAsFixed(1)}K'
-        : '$n';
+    ? '${(n / 1e3).toStringAsFixed(1)}K'
+    : '$n';
 
 class AirTrainApp extends StatelessWidget {
   const AirTrainApp({super.key});
@@ -78,9 +81,13 @@ class Device {
     this.clock = 0,
     this.throttled = false,
     this.tempHistory = const [],
+    this.city = 'Bengaluru, IN',
+    this.lat = 12.97,
+    this.lon = 77.59,
   });
 
-  final String id, name, gpu;
+  final String id, name, gpu, city;
+  final double lat, lon;
   final IconData icon;
   final DeviceState state;
   final bool paused;
@@ -121,32 +128,34 @@ class Device {
     double? clock,
     bool? throttled,
     List<double>? tempHistory,
-  }) =>
-      Device(
-        id: id,
-        name: name,
-        gpu: gpu,
-        icon: icon,
-        vramTotal: vramTotal,
-        state: state ?? this.state,
-        paused: paused ?? this.paused,
-        util: util ?? this.util,
-        vramUsed: vramUsed ?? this.vramUsed,
-        temp: temp ?? this.temp,
-        power: power ?? this.power,
-        history: history ?? this.history,
-        samples: samples ?? this.samples,
-        tempLimit: tempLimit,
-        powerLimit: powerLimit,
-        ramTotal: ramTotal,
-        hasFan: hasFan,
-        cpu: cpu ?? this.cpu,
-        ram: ram ?? this.ram,
-        fan: fan ?? this.fan,
-        clock: clock ?? this.clock,
-        throttled: throttled ?? this.throttled,
-        tempHistory: tempHistory ?? this.tempHistory,
-      );
+  }) => Device(
+    id: id,
+    name: name,
+    gpu: gpu,
+    icon: icon,
+    vramTotal: vramTotal,
+    state: state ?? this.state,
+    paused: paused ?? this.paused,
+    util: util ?? this.util,
+    vramUsed: vramUsed ?? this.vramUsed,
+    temp: temp ?? this.temp,
+    power: power ?? this.power,
+    history: history ?? this.history,
+    samples: samples ?? this.samples,
+    tempLimit: tempLimit,
+    powerLimit: powerLimit,
+    ramTotal: ramTotal,
+    hasFan: hasFan,
+    cpu: cpu ?? this.cpu,
+    ram: ram ?? this.ram,
+    fan: fan ?? this.fan,
+    clock: clock ?? this.clock,
+    throttled: throttled ?? this.throttled,
+    tempHistory: tempHistory ?? this.tempHistory,
+    city: city,
+    lat: lat,
+    lon: lon,
+  );
 }
 
 class RoundLog {
@@ -176,21 +185,149 @@ class Job {
   double get progress => round / totalRounds;
 
   Job copyWith({int? round, List<double>? acc, List<double>? loss, List<RoundLog>? log, double? throughput}) => Job(
-        round: round ?? this.round,
-        totalRounds: totalRounds,
-        acc: acc ?? this.acc,
-        loss: loss ?? this.loss,
-        log: log ?? this.log,
-        startedAt: startedAt,
-        throughput: throughput ?? this.throughput,
-      );
+    round: round ?? this.round,
+    totalRounds: totalRounds,
+    acc: acc ?? this.acc,
+    loss: loss ?? this.loss,
+    log: log ?? this.log,
+    startedAt: startedAt,
+    throughput: throughput ?? this.throughput,
+  );
 }
 
+/// A device owned by someone else that has joined the same training job.
+class Peer {
+  const Peer({
+    required this.id,
+    required this.name,
+    required this.hw,
+    required this.city,
+    required this.lat,
+    required this.lon,
+    required this.baseLatency,
+    this.joinAt = 0,
+    this.leaveAt = -1,
+    this.offline = false,
+    this.state = DeviceState.idle,
+    this.latency = 0,
+  });
+  final String id, name, hw, city;
+  final double lat, lon;
+  final int baseLatency, joinAt, leaveAt;
+  final bool offline;
+  final DeviceState state;
+  final int latency;
+
+  Peer step(int tick, Random rng) => Peer(
+    id: id,
+    name: name,
+    hw: hw,
+    city: city,
+    lat: lat,
+    lon: lon,
+    baseLatency: baseLatency,
+    joinAt: joinAt,
+    leaveAt: leaveAt,
+    offline: offline,
+    state: offline
+        ? DeviceState.offline
+        : tick >= joinAt && (leaveAt < 0 || tick < leaveAt)
+        ? DeviceState.training
+        : DeviceState.idle,
+    latency: offline ? 0 : baseLatency + rng.nextInt(max(4, baseLatency ~/ 6)),
+  );
+}
+
+/// Where the FedAvg coordinator runs. Every device talks only to it (star topology).
+const coordinator = (name: 'Coordinator', city: 'Mumbai, IN', lat: 19.07, lon: 72.88);
+
 class SwarmState {
-  const SwarmState(this.devices, this.job);
+  const SwarmState(this.devices, this.job, [this.peers = const []]);
   final List<Device> devices;
   final Job job;
+  final List<Peer> peers;
+
+  int get activeCount =>
+      devices.where((d) => d.active).length + peers.where((p) => p.state == DeviceState.training).length;
+  int get connectedCount =>
+      devices.where((d) => d.state != DeviceState.offline).length + peers.where((p) => !p.offline).length;
+  int get totalCount => devices.length + peers.length;
 }
+
+const _mockPeers = [
+  Peer(id: 'lab4', name: 'Lab PC 04', hw: 'RTX 3060', city: 'Bengaluru, IN', lat: 13.03, lon: 77.50, baseLatency: 14),
+  Peer(
+    id: 'm2',
+    name: 'MacBook Pro M2',
+    hw: 'Apple M2 Pro',
+    city: 'Hyderabad, IN',
+    lat: 17.39,
+    lon: 78.49,
+    baseLatency: 31,
+    joinAt: 5,
+  ),
+  Peer(
+    id: 'pune',
+    name: 'Gaming PC',
+    hw: 'RTX 4060',
+    city: 'Pune, IN',
+    lat: 18.52,
+    lon: 73.86,
+    baseLatency: 22,
+    joinAt: 12,
+  ),
+  Peer(
+    id: 'del',
+    name: 'Workstation',
+    hw: 'RTX A4000',
+    city: 'Delhi, IN',
+    lat: 28.61,
+    lon: 77.21,
+    baseLatency: 38,
+    joinAt: 20,
+  ),
+  Peer(
+    id: 'ber',
+    name: 'Desktop',
+    hw: 'RTX 3080',
+    city: 'Berlin, DE',
+    lat: 52.52,
+    lon: 13.40,
+    baseLatency: 142,
+    joinAt: 3,
+  ),
+  Peer(
+    id: 'tyo',
+    name: 'Mac Studio',
+    hw: 'Apple M3 Max',
+    city: 'Tokyo, JP',
+    lat: 35.68,
+    lon: 139.69,
+    baseLatency: 96,
+    joinAt: 2,
+    leaveAt: 30,
+  ),
+  Peer(
+    id: 'aus',
+    name: 'Tower PC',
+    hw: 'RTX 4070',
+    city: 'Austin, US',
+    lat: 30.27,
+    lon: -97.74,
+    baseLatency: 231,
+    joinAt: 16,
+  ),
+  Peer(
+    id: 'sp',
+    name: 'Laptop',
+    hw: 'GTX 1660 Ti',
+    city: 'São Paulo, BR',
+    lat: -23.55,
+    lon: -46.63,
+    baseLatency: 0,
+    offline: true,
+  ),
+];
 
 // ---------- Mock data source (replace with WebSocket later) ----------
 class SwarmNotifier extends Notifier<SwarmState> {
@@ -225,9 +362,12 @@ class SwarmNotifier extends Notifier<SwarmState> {
           powerLimit: 25,
           ramTotal: 8,
           hasFan: false,
+          lat: 12.90,
+          lon: 77.66,
         ),
       ],
       Job(round: 0, totalRounds: 50, acc: const [], loss: const [], log: const [], startedAt: DateTime.now()),
+      [for (final p in _mockPeers) p.step(0, _rng)],
     );
   }
 
@@ -264,6 +404,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
       );
     }).toList();
 
+    final peers = [for (final p in state.peers) p.step(_tick, _rng)];
     int sum(List<Device> l) => l.fold<int>(0, (a, d) => a + d.samples);
     final total = sum(devices);
     var job = state.job.copyWith(throughput: (total - sum(state.devices)).toDouble());
@@ -271,7 +412,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
       final r = job.round + 1;
       final a = 0.86 * (1 - exp(-r / 10)) + (_rng.nextDouble() - 0.5) * 0.01;
       final l = 2.3 * exp(-r / 12) + 0.35 + (_rng.nextDouble() - 0.5) * 0.04;
-      final n = devices.where((d) => d.active).length;
+      final n = devices.where((d) => d.active).length + peers.where((p) => p.state == DeviceState.training).length;
       job = job.copyWith(
         round: r,
         acc: [...job.acc, a],
@@ -279,13 +420,14 @@ class SwarmNotifier extends Notifier<SwarmState> {
         log: [RoundLog(r, a, l, n, total), ...job.log],
       );
     }
-    state = SwarmState(devices, job);
+    state = SwarmState(devices, job, peers);
   }
 
   void togglePause(String id) {
     state = SwarmState(
       [for (final d in state.devices) d.id == id ? d.copyWith(paused: !d.paused) : d],
       state.job,
+      state.peers,
     );
   }
 }
@@ -305,9 +447,11 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _i, children: const [HomeScreen(), TrainingScreen(), HealthScreen()]),
+      body: IndexedStack(index: _i, children: const [HomeScreen(), TrainingScreen(), HealthScreen(), NetworkScreen()]),
       bottomNavigationBar: Container(
-        decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.border))),
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: C.border)),
+        ),
         child: NavigationBar(
           backgroundColor: C.bg,
           indicatorColor: C.accent.withValues(alpha: 0.18),
@@ -317,13 +461,25 @@ class _MainShellState extends State<MainShell> {
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
           destinations: const [
             NavigationDestination(
-                icon: Icon(Icons.grid_view_outlined), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Overview'),
+              icon: Icon(Icons.grid_view_outlined),
+              selectedIcon: Icon(Icons.grid_view_rounded),
+              label: 'Overview',
+            ),
             NavigationDestination(
-                icon: Icon(Icons.insights_outlined), selectedIcon: Icon(Icons.insights_rounded), label: 'Training'),
+              icon: Icon(Icons.insights_outlined),
+              selectedIcon: Icon(Icons.insights_rounded),
+              label: 'Training',
+            ),
             NavigationDestination(
-                icon: Icon(Icons.monitor_heart_outlined),
-                selectedIcon: Icon(Icons.monitor_heart_rounded),
-                label: 'Health'),
+              icon: Icon(Icons.monitor_heart_outlined),
+              selectedIcon: Icon(Icons.monitor_heart_rounded),
+              label: 'Health',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.public_outlined),
+              selectedIcon: Icon(Icons.public_rounded),
+              label: 'Network',
+            ),
           ],
         ),
       ),
@@ -343,7 +499,8 @@ class TrainingScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final job = ref.watch(swarmProvider).job;
+    final swarm = ref.watch(swarmProvider);
+    final job = swarm.job;
     final elapsed = DateTime.now().difference(job.startedAt);
     final done = job.round >= job.totalRounds;
     final eta = job.round == 0 ? null : elapsed * ((job.totalRounds - job.round) / job.round);
@@ -353,8 +510,10 @@ class TrainingScreen extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
           children: [
-            const Text('Training',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5)),
+            const Text(
+              'Training',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5),
+            ),
             const SizedBox(height: 2),
             const Text('CIFAR-10 CNN · FedAvg', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 20),
@@ -385,9 +544,15 @@ class TrainingScreen extends ConsumerWidget {
                         Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text('${(job.progress * 100).toStringAsFixed(0)}%',
-                                style: const TextStyle(
-                                    color: C.text, fontSize: 24, fontWeight: FontWeight.w700, fontFeatures: tabular)),
+                            Text(
+                              '${(job.progress * 100).toStringAsFixed(0)}%',
+                              style: const TextStyle(
+                                color: C.text,
+                                fontSize: 24,
+                                fontWeight: FontWeight.w700,
+                                fontFeatures: tabular,
+                              ),
+                            ),
                             Text(done ? 'done' : 'trained', style: const TextStyle(color: C.muted, fontSize: 11)),
                           ],
                         ),
@@ -400,7 +565,14 @@ class TrainingScreen extends ConsumerWidget {
                       children: [
                         KV('Round', '${job.round} / ${job.totalRounds}'),
                         KV('Elapsed', fmtDur(elapsed)),
-                        KV('ETA', done ? 'Complete' : eta == null ? '--' : fmtDur(eta)),
+                        KV(
+                          'ETA',
+                          done
+                              ? 'Complete'
+                              : eta == null
+                              ? '--'
+                              : fmtDur(eta),
+                        ),
                       ],
                     ),
                   ),
@@ -408,25 +580,44 @@ class TrainingScreen extends ConsumerWidget {
               ),
             ),
             const SizedBox(height: 12),
-            Row(children: [
-              MetricTile(label: 'Accuracy', value: pct(job.accuracy)),
-              const SizedBox(width: 12),
-              MetricTile(label: 'Best', value: pct(job.bestAccuracy)),
-            ]),
+            Row(
+              children: [
+                MetricTile(label: 'Accuracy', value: pct(job.accuracy)),
+                const SizedBox(width: 12),
+                MetricTile(label: 'Best', value: pct(job.bestAccuracy)),
+              ],
+            ),
             const SizedBox(height: 12),
-            Row(children: [
-              MetricTile(label: 'Loss', value: job.currentLoss.toStringAsFixed(3)),
-              const SizedBox(width: 12),
-              MetricTile(label: 'Throughput', value: '${fmt(job.throughput.round())}/s'),
-            ]),
+            Row(
+              children: [
+                MetricTile(label: 'Loss', value: job.currentLoss.toStringAsFixed(3)),
+                const SizedBox(width: 12),
+                MetricTile(label: 'Throughput', value: '${fmt(job.throughput.round())}/s'),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                MetricTile(label: 'Devices training', value: '${swarm.activeCount}'),
+                const SizedBox(width: 12),
+                MetricTile(label: 'Connected', value: '${swarm.connectedCount} / ${swarm.totalCount}'),
+              ],
+            ),
             const SizedBox(height: 12),
             ChartCard(title: 'Accuracy', value: pct(job.accuracy), data: job.acc, max: 1, color: C.accent),
             const SizedBox(height: 12),
             ChartCard(
-                title: 'Loss', value: job.currentLoss.toStringAsFixed(3), data: job.loss, max: 2.7, color: C.amber),
+              title: 'Loss',
+              value: job.currentLoss.toStringAsFixed(3),
+              data: job.loss,
+              max: 2.7,
+              color: C.amber,
+            ),
             const SizedBox(height: 28),
-            const Text('RECENT ROUNDS',
-                style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
+            const Text(
+              'RECENT ROUNDS',
+              style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
+            ),
             const SizedBox(height: 12),
             Container(
               decoration: cardDeco,
@@ -434,18 +625,15 @@ class TrainingScreen extends ConsumerWidget {
               child: job.log.isEmpty
                   ? const Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
-                      child: Center(child: Text('Waiting for first round', style: TextStyle(color: C.muted))),
+                      child: Center(
+                        child: Text('Waiting for first round', style: TextStyle(color: C.muted)),
+                      ),
                     )
                   : Column(
                       children: [
                         const _RoundRow(cells: ['Round', 'Accuracy', 'Loss', 'Devices'], header: true),
                         for (final r in job.log.take(8))
-                          _RoundRow(cells: [
-                            '#${r.round}',
-                            pct(r.acc),
-                            r.loss.toStringAsFixed(3),
-                            '${r.devices}',
-                          ]),
+                          _RoundRow(cells: ['#${r.round}', pct(r.acc), r.loss.toStringAsFixed(3), '${r.devices}']),
                       ],
                     ),
             ),
@@ -459,10 +647,10 @@ class TrainingScreen extends ConsumerWidget {
 (String, Color) stressLevel(double s) => s < 40
     ? ('Low', C.green)
     : s < 65
-        ? ('Moderate', C.accent)
-        : s < 85
-            ? ('High', C.amber)
-            : ('Critical', C.red);
+    ? ('Moderate', C.accent)
+    : s < 85
+    ? ('High', C.amber)
+    : ('Critical', C.red);
 
 class HealthScreen extends ConsumerWidget {
   const HealthScreen({super.key});
@@ -475,13 +663,18 @@ class HealthScreen extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
           children: [
-            const Text('Device health',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5)),
+            const Text(
+              'Device health',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5),
+            ),
             const SizedBox(height: 2),
             const Text('How hard each device is working', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 20),
             for (final d in devices)
-              Padding(padding: const EdgeInsets.only(bottom: 16), child: HealthCard(device: d)),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: HealthCard(device: d),
+              ),
           ],
         ),
       ),
@@ -497,7 +690,11 @@ class HealthCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final d = device;
     final (label, color) = stressLevel(d.stress);
-    final tempColor = d.headroom < 5 ? C.red : d.headroom < 15 ? C.amber : C.green;
+    final tempColor = d.headroom < 5
+        ? C.red
+        : d.headroom < 15
+        ? C.amber
+        : C.green;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -510,11 +707,12 @@ class HealthCard extends ConsumerWidget {
               Icon(d.icon, color: C.text, size: 20),
               const SizedBox(width: 10),
               Expanded(
-                  child: Text(d.name, style: const TextStyle(color: C.text, fontWeight: FontWeight.w600))),
-              if (d.throttled) ...[
-                const StatusPill(label: 'Throttling', color: C.red),
-                const SizedBox(width: 6),
-              ],
+                child: Text(
+                  d.name,
+                  style: const TextStyle(color: C.text, fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (d.throttled) ...[const StatusPill(label: 'Throttling', color: C.red), const SizedBox(width: 6)],
               StatusPill(label: label, color: color),
             ],
           ),
@@ -533,9 +731,15 @@ class HealthCard extends ConsumerWidget {
                       padding: const EdgeInsets.only(top: 34),
                       child: Column(
                         children: [
-                          Text(d.stress.toStringAsFixed(0),
-                              style: const TextStyle(
-                                  color: C.text, fontSize: 28, fontWeight: FontWeight.w700, fontFeatures: tabular)),
+                          Text(
+                            d.stress.toStringAsFixed(0),
+                            style: const TextStyle(
+                              color: C.text,
+                              fontSize: 28,
+                              fontWeight: FontWeight.w700,
+                              fontFeatures: tabular,
+                            ),
+                          ),
                           const Text('stress', style: TextStyle(color: C.muted, fontSize: 11)),
                         ],
                       ),
@@ -550,17 +754,20 @@ class HealthCard extends ConsumerWidget {
                     LoadBar(label: 'GPU', value: d.util / 100, text: '${d.util.toStringAsFixed(0)}%'),
                     LoadBar(label: 'CPU', value: d.cpu / 100, text: '${d.cpu.toStringAsFixed(0)}%'),
                     LoadBar(
-                        label: 'VRAM',
-                        value: d.vramUsed / d.vramTotal,
-                        text: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G'),
+                      label: 'VRAM',
+                      value: d.vramUsed / d.vramTotal,
+                      text: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G',
+                    ),
                     LoadBar(
-                        label: 'RAM',
-                        value: d.ram / d.ramTotal,
-                        text: '${d.ram.toStringAsFixed(1)}/${d.ramTotal.toStringAsFixed(0)}G'),
+                      label: 'RAM',
+                      value: d.ram / d.ramTotal,
+                      text: '${d.ram.toStringAsFixed(1)}/${d.ramTotal.toStringAsFixed(0)}G',
+                    ),
                     LoadBar(
-                        label: 'Power',
-                        value: d.power / d.powerLimit,
-                        text: '${d.power.toStringAsFixed(0)}/${d.powerLimit.toStringAsFixed(0)}W'),
+                      label: 'Power',
+                      value: d.power / d.powerLimit,
+                      text: '${d.power.toStringAsFixed(0)}/${d.powerLimit.toStringAsFixed(0)}W',
+                    ),
                   ],
                 ),
               ),
@@ -571,10 +778,14 @@ class HealthCard extends ConsumerWidget {
             children: [
               const Text('Temperature', style: TextStyle(color: C.muted, fontSize: 12)),
               const Spacer(),
-              Text('${d.temp.toStringAsFixed(0)}°C',
-                  style: TextStyle(color: tempColor, fontWeight: FontWeight.w600, fontFeatures: tabular)),
-              Text('  /  limit ${d.tempLimit.toStringAsFixed(0)}°C',
-                  style: const TextStyle(color: C.muted, fontSize: 12)),
+              Text(
+                '${d.temp.toStringAsFixed(0)}°C',
+                style: TextStyle(color: tempColor, fontWeight: FontWeight.w600, fontFeatures: tabular),
+              ),
+              Text(
+                '  /  limit ${d.tempLimit.toStringAsFixed(0)}°C',
+                style: const TextStyle(color: C.muted, fontSize: 12),
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -601,12 +812,19 @@ class LoadBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final v = value.clamp(0.0, 1.0);
-    final color = v > 0.9 ? C.red : v > 0.75 ? C.amber : C.accent;
+    final color = v > 0.9
+        ? C.red
+        : v > 0.75
+        ? C.amber
+        : C.accent;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          SizedBox(width: 44, child: Text(label, style: const TextStyle(color: C.muted, fontSize: 12))),
+          SizedBox(
+            width: 44,
+            child: Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
+          ),
           Expanded(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(3),
@@ -620,9 +838,11 @@ class LoadBar extends StatelessWidget {
           ),
           SizedBox(
             width: 64,
-            child: Text(text,
-                textAlign: TextAlign.right,
-                style: const TextStyle(color: C.text, fontSize: 12, fontFeatures: tabular)),
+            child: Text(
+              text,
+              textAlign: TextAlign.right,
+              style: const TextStyle(color: C.text, fontSize: 12, fontFeatures: tabular),
+            ),
           ),
         ],
       ),
@@ -664,9 +884,10 @@ class KV extends StatelessWidget {
         children: [
           Text(k, style: const TextStyle(color: C.muted, fontSize: 13)),
           const Spacer(),
-          Text(v,
-              style: const TextStyle(
-                  color: C.text, fontSize: 14, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+          Text(
+            v,
+            style: const TextStyle(color: C.text, fontSize: 14, fontWeight: FontWeight.w600, fontFeatures: tabular),
+          ),
         ],
       ),
     );
@@ -688,9 +909,10 @@ class MetricTile extends StatelessWidget {
           children: [
             Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
             const SizedBox(height: 6),
-            Text(value,
-                style: const TextStyle(
-                    color: C.text, fontSize: 22, fontWeight: FontWeight.w700, fontFeatures: tabular)),
+            Text(
+              value,
+              style: const TextStyle(color: C.text, fontSize: 22, fontWeight: FontWeight.w700, fontFeatures: tabular),
+            ),
           ],
         ),
       ),
@@ -699,8 +921,14 @@ class MetricTile extends StatelessWidget {
 }
 
 class ChartCard extends StatelessWidget {
-  const ChartCard(
-      {super.key, required this.title, required this.value, required this.data, required this.max, required this.color});
+  const ChartCard({
+    super.key,
+    required this.title,
+    required this.value,
+    required this.data,
+    required this.max,
+    required this.color,
+  });
   final String title, value;
   final List<double> data;
   final double max;
@@ -716,9 +944,15 @@ class ChartCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(title, style: const TextStyle(color: C.text, fontWeight: FontWeight.w600)),
+              Text(
+                title,
+                style: const TextStyle(color: C.text, fontWeight: FontWeight.w600),
+              ),
               const Spacer(),
-              Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+              Text(
+                value,
+                style: TextStyle(color: color, fontWeight: FontWeight.w600, fontFeatures: tabular),
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -744,18 +978,26 @@ class _RoundRow extends StatelessWidget {
     );
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 10),
-      decoration: header ? null : const BoxDecoration(border: Border(top: BorderSide(color: C.border))),
+      decoration: header
+          ? null
+          : const BoxDecoration(
+              border: Border(top: BorderSide(color: C.border)),
+            ),
       child: Row(
         children: [
           SizedBox(width: 56, child: Text(cells[0], style: style)),
           Expanded(child: Text(cells[1], style: style)),
           Expanded(child: Text(cells[2], style: style)),
-          SizedBox(width: 56, child: Text(cells[3], style: style, textAlign: TextAlign.right)),
+          SizedBox(
+            width: 56,
+            child: Text(cells[3], style: style, textAlign: TextAlign.right),
+          ),
         ],
       ),
     );
   }
 }
+
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -777,9 +1019,10 @@ class HomeScreen extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('AirTrain',
-                          style: TextStyle(
-                              fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5)),
+                      Text(
+                        'AirTrain',
+                        style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5),
+                      ),
                       SizedBox(height: 2),
                       Text('Idle compute, put to work', style: TextStyle(color: C.muted, fontSize: 13)),
                     ],
@@ -791,8 +1034,10 @@ class HomeScreen extends ConsumerWidget {
             const SizedBox(height: 20),
             JobCard(job: s.job, totalSamples: total, activeDevices: active),
             const SizedBox(height: 28),
-            const Text('DEVICES',
-                style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
+            const Text(
+              'DEVICES',
+              style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
+            ),
             const SizedBox(height: 12),
             for (final d in s.devices)
               Padding(
@@ -821,23 +1066,31 @@ class JobCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Text('CIFAR-10 CNN', style: TextStyle(color: C.text, fontWeight: FontWeight.w600)),
+              const Text(
+                'CIFAR-10 CNN',
+                style: TextStyle(color: C.text, fontWeight: FontWeight.w600),
+              ),
               const Spacer(),
-              Text('Round ${job.round}/${job.totalRounds}',
-                  style: const TextStyle(color: C.muted, fontSize: 13, fontFeatures: tabular)),
+              Text(
+                'Round ${job.round}/${job.totalRounds}',
+                style: const TextStyle(color: C.muted, fontSize: 13, fontFeatures: tabular),
+              ),
             ],
           ),
           const SizedBox(height: 16),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text('${(job.accuracy * 100).toStringAsFixed(1)}%',
-                  style: const TextStyle(
-                      fontSize: 40,
-                      fontWeight: FontWeight.w700,
-                      color: C.text,
-                      letterSpacing: -1,
-                      fontFeatures: tabular)),
+              Text(
+                '${(job.accuracy * 100).toStringAsFixed(1)}%',
+                style: const TextStyle(
+                  fontSize: 40,
+                  fontWeight: FontWeight.w700,
+                  color: C.text,
+                  letterSpacing: -1,
+                  fontFeatures: tabular,
+                ),
+              ),
               const SizedBox(width: 8),
               const Padding(
                 padding: EdgeInsets.only(bottom: 9),
@@ -853,12 +1106,8 @@ class JobCard extends StatelessWidget {
             child: TweenAnimationBuilder<double>(
               tween: Tween(end: job.round / job.totalRounds),
               duration: const Duration(milliseconds: 400),
-              builder: (_, v, _) => LinearProgressIndicator(
-                value: v,
-                minHeight: 6,
-                backgroundColor: C.border,
-                color: C.accent,
-              ),
+              builder: (_, v, _) =>
+                  LinearProgressIndicator(value: v, minHeight: 6, backgroundColor: C.border, color: C.accent),
             ),
           ),
           const SizedBox(height: 16),
@@ -918,7 +1167,10 @@ class DeviceCard extends ConsumerWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(d.name, style: const TextStyle(color: C.text, fontWeight: FontWeight.w600)),
+                    Text(
+                      d.name,
+                      style: const TextStyle(color: C.text, fontWeight: FontWeight.w600),
+                    ),
                     const SizedBox(height: 2),
                     Text(d.gpu, style: const TextStyle(color: C.muted, fontSize: 12)),
                   ],
@@ -941,8 +1193,10 @@ class DeviceCard extends ConsumerWidget {
           const SizedBox(height: 16),
           Row(
             children: [
-              Text('${(share * 100).toStringAsFixed(0)}% of work',
-                  style: const TextStyle(color: C.muted, fontSize: 12, fontFeatures: tabular)),
+              Text(
+                '${(share * 100).toStringAsFixed(0)}% of work',
+                style: const TextStyle(color: C.muted, fontSize: 12, fontFeatures: tabular),
+              ),
               const Spacer(),
               TextButton.icon(
                 onPressed: () => ref.read(swarmProvider.notifier).togglePause(d.id),
@@ -975,9 +1229,10 @@ class Stat extends StatelessWidget {
         children: [
           Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
           const SizedBox(height: 4),
-          Text(value,
-              style: const TextStyle(
-                  color: C.text, fontSize: 15, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+          Text(
+            value,
+            style: const TextStyle(color: C.text, fontSize: 15, fontWeight: FontWeight.w600, fontFeatures: tabular),
+          ),
         ],
       ),
     );
@@ -998,9 +1253,16 @@ class StatusPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
           const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+          Text(
+            label,
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600),
+          ),
         ],
       ),
     );
@@ -1065,4 +1327,386 @@ class _SparkPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SparkPainter old) => true;
+}
+
+// ---------- Network ----------
+/// One point on the map: either one of your devices or a peer.
+class NetNode {
+  const NetNode(this.name, this.detail, this.city, this.lat, this.lon, this.state, this.latency, this.mine);
+  final String name, detail, city;
+  final double lat, lon;
+  final DeviceState state;
+  final int latency;
+  final bool mine;
+}
+
+Color stateColor(DeviceState s) => switch (s) {
+  DeviceState.training => C.green,
+  DeviceState.idle => C.muted,
+  DeviceState.busy => C.amber,
+  DeviceState.offline => C.red,
+};
+
+class NetworkScreen extends ConsumerStatefulWidget {
+  const NetworkScreen({super.key});
+  @override
+  ConsumerState<NetworkScreen> createState() => _NetworkScreenState();
+}
+
+class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTickerProviderStateMixin {
+  late final _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))..repeat();
+  bool _india = false;
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(swarmProvider);
+    final nodes = [
+      for (final d in s.devices)
+        NetNode(d.name, d.gpu, d.city, d.lat, d.lon, d.paused ? DeviceState.idle : d.state, 8 + d.id.length, true),
+      for (final p in s.peers) NetNode(p.name, p.hw, p.city, p.lat, p.lon, p.state, p.latency, false),
+    ];
+    final live = nodes.where((n) => n.state != DeviceState.offline && n.latency > 0).toList();
+    final avgLatency = live.isEmpty ? 0 : live.fold<int>(0, (a, n) => a + n.latency) ~/ live.length;
+    final countries = nodes.where((n) => n.state != DeviceState.offline).map((n) => n.city.split(', ').last).toSet();
+    final sorted = [...nodes]..sort((a, b) => a.state.index.compareTo(b.state.index));
+
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+          children: [
+            const Text(
+              'Network',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5),
+            ),
+            const SizedBox(height: 2),
+            const Text('Every device syncs with one coordinator', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: cardDeco,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${s.activeCount}',
+                        style: const TextStyle(
+                          color: C.text,
+                          fontSize: 44,
+                          height: 1,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -1,
+                          fontFeatures: tabular,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
+                    ],
+                  ),
+                  const Spacer(),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      _NetStat('Connected', '${s.connectedCount} / ${s.totalCount}'),
+                      _NetStat('Yours', '${s.devices.where((d) => d.active).length} / ${s.devices.length}'),
+                      _NetStat('Countries', '${countries.length}'),
+                      _NetStat('Avg latency', '$avgLatency ms'),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: cardDeco,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        'Device map',
+                        style: TextStyle(color: C.text, fontWeight: FontWeight.w600),
+                      ),
+                      const Spacer(),
+                      _Seg(
+                        labels: const ['World', 'India'],
+                        index: _india ? 1 : 0,
+                        onTap: (i) => setState(() => _india = i == 1),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  LayoutBuilder(
+                    builder: (_, c) {
+                      final region = _india ? indiaMap : worldMap;
+                      return SizedBox(
+                        width: c.maxWidth,
+                        height: c.maxWidth * region.aspect,
+                        child: AnimatedBuilder(
+                          animation: _pulse,
+                          builder: (_, _) => CustomPaint(painter: _MapPainter(region, nodes, _pulse.value)),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  const Wrap(
+                    spacing: 14,
+                    runSpacing: 6,
+                    children: [
+                      _Legend(C.accent, 'Coordinator'),
+                      _Legend(C.green, 'Training'),
+                      _Legend(C.muted, 'Idle'),
+                      _Legend(C.red, 'Offline'),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 28),
+            const Text(
+              'NODES',
+              style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              decoration: cardDeco,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: Column(children: [for (final n in sorted) _NodeRow(n)]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NetStat extends StatelessWidget {
+  const _NetStat(this.label, this.value);
+  final String label, value;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 64,
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            style: const TextStyle(color: C.text, fontSize: 12, fontWeight: FontWeight.w600, fontFeatures: tabular),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _Seg extends StatelessWidget {
+  const _Seg({required this.labels, required this.index, required this.onTap});
+  final List<String> labels;
+  final int index;
+  final ValueChanged<int> onTap;
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(3),
+    decoration: BoxDecoration(
+      color: C.bg,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: C.border),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < labels.length; i++)
+          GestureDetector(
+            onTap: () => onTap(i),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: i == index ? C.border : Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                labels[i],
+                style: TextStyle(color: i == index ? C.text : C.muted, fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+class _Legend extends StatelessWidget {
+  const _Legend(this.color, this.label);
+  final Color color;
+  final String label;
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        width: 7,
+        height: 7,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+      const SizedBox(width: 6),
+      Text(label, style: const TextStyle(color: C.muted, fontSize: 11)),
+    ],
+  );
+}
+
+class _NodeRow extends StatelessWidget {
+  const _NodeRow(this.n);
+  final NetNode n;
+  @override
+  Widget build(BuildContext context) {
+    final color = stateColor(n.state);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        n.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: C.text, fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                    if (n.mine) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: C.accent.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'You',
+                          style: TextStyle(color: C.accent, fontSize: 10, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text('${n.detail} · ${n.city}', style: const TextStyle(color: C.muted, fontSize: 12)),
+              ],
+            ),
+          ),
+          Text(
+            n.state == DeviceState.offline ? 'offline' : '${n.latency} ms',
+            style: TextStyle(
+              color: n.state == DeviceState.offline ? C.red : C.muted,
+              fontSize: 12,
+              fontFeatures: tabular,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapPainter extends CustomPainter {
+  _MapPainter(this.region, this.nodes, this.t);
+  final MapRegion region;
+  final List<NetNode> nodes;
+  final double t;
+
+  Offset _project(double lat, double lon, Size size) {
+    var x = lon;
+    if (x < region.lonMin) x += 360;
+    return Offset(
+      (x - region.lonMin) / (region.lonMax - region.lonMin) * size.width,
+      (region.latMax - lat) / (region.latMax - region.latMin) * size.height,
+    );
+  }
+
+  Offset _bezier(Offset a, Offset c, Offset b, double t) =>
+      a * ((1 - t) * (1 - t)) + c * (2 * (1 - t) * t) + b * (t * t);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+    final cw = size.width / region.cols, ch = size.height / region.rows.length;
+    final r = min(cw, ch) * 0.3;
+    final land = Paint()..color = Colors.white.withValues(alpha: 0.13);
+    for (var j = 0; j < region.rows.length; j++) {
+      final row = region.rows[j];
+      for (var i = 0; i < row.length; i++) {
+        if (row.codeUnitAt(i) == 49) canvas.drawCircle(Offset((i + 0.5) * cw, (j + 0.5) * ch), r, land);
+      }
+    }
+
+    final hub = _project(coordinator.lat, coordinator.lon, size);
+    final dotR = max(2.6, size.width / 120);
+
+    for (var k = 0; k < nodes.length; k++) {
+      final n = nodes[k];
+      final p = _project(n.lat, n.lon, size);
+      final color = stateColor(n.state);
+      final mid = (p + hub) / 2;
+      final d = hub - p;
+      final ctrl = mid + Offset(d.dy, -d.dx) * 0.25 - Offset(0, d.distance * 0.12);
+
+      if (n.state != DeviceState.offline) {
+        final path = Path()
+          ..moveTo(p.dx, p.dy)
+          ..quadraticBezierTo(ctrl.dx, ctrl.dy, hub.dx, hub.dy);
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.2
+            ..color = color.withValues(alpha: n.state == DeviceState.training ? 0.45 : 0.18),
+        );
+        if (n.state == DeviceState.training) {
+          // update packets: device -> coordinator, then averaged weights back
+          final ph = (t + k * 0.137) % 1.0;
+          final up = ph < 0.5;
+          final q = _bezier(p, ctrl, hub, up ? ph * 2 : 2 - ph * 2);
+          canvas.drawCircle(q, 2.2, Paint()..color = up ? C.green : C.accent);
+        }
+      }
+      canvas.drawCircle(p, dotR * 2.2, Paint()..color = color.withValues(alpha: 0.15));
+      canvas.drawCircle(p, dotR, Paint()..color = color);
+    }
+
+    final glow = 0.5 + 0.5 * sin(t * 2 * pi);
+    canvas.drawCircle(hub, dotR * (2.6 + glow), Paint()..color = C.accent.withValues(alpha: 0.18));
+    canvas.drawCircle(hub, dotR * 1.4, Paint()..color = C.accent);
+    canvas.drawCircle(hub, dotR * 0.6, Paint()..color = C.bg);
+  }
+
+  @override
+  bool shouldRepaint(_MapPainter old) => true;
 }
