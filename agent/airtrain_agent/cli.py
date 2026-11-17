@@ -88,12 +88,30 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
+def _make_controller(args: argparse.Namespace, train: bool) -> Any:
     from .controller import Controller
-    from .server import run_server
+    from .trainer import TrainUnavailable
 
     cfg, created = load_config()
-    ctrl = Controller(cfg)
+    try:
+        ctrl = Controller(
+            cfg,
+            train=train,
+            rounds=getattr(args, "rounds", 50),
+            dataset=getattr(args, "dataset", "cifar10"),
+            require_idle=not getattr(args, "no_idle_check", False),
+            steps_per_round=getattr(args, "steps", 100),
+        )
+    except TrainUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None, cfg, created
+    return ctrl, cfg, created
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    ctrl, cfg, created = _make_controller(args, args.train)
+    if ctrl is None:
+        return 2
     token = args.token or cfg.token
     port = args.port or cfg.port
     ip = lan_ip() if args.host in ("0.0.0.0", "") else args.host
@@ -106,7 +124,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  LAN IP   {ip}")
     print(f"  Token    {token}")
     print(f"  App URL  {url}")
+    print(f"  Training {'on, ' + ('idle-gated' if ctrl.require_idle else 'always (no idle check)') if ctrl.trainer else 'off (add --train)'}")
     print("In the app: Overview > + > paste the URL (or host:port and token). Ctrl+C to stop.", flush=True)
+    ctrl.start()
+
+    from .server import run_server
+
     try:
         asyncio.run(run_server(ctrl, args.host, port, token, quiet=args.quiet))
     except KeyboardInterrupt:
@@ -157,11 +180,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true", help="print the raw telemetry JSON")
     s.set_defaults(func=cmd_status)
 
+    def train_opts(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--rounds", type=int, default=50, help="local training rounds (default 50)")
+        sp.add_argument("--steps", type=int, default=100, help="batches per round (default 100)")
+        sp.add_argument("--dataset", choices=["cifar10", "synthetic"], default="cifar10",
+                        help="synthetic skips the CIFAR-10 download (for testing)")
+        sp.add_argument("--no-idle-check", action="store_true",
+                        help="train even while you are using the machine (temperature limit still applies)")
+
     s = sub.add_parser("serve", help="stream telemetry to the phone app over WebSocket")
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=0, help="default from config (8765)")
     s.add_argument("--token", help="override the pairing token for this run")
+    s.add_argument("--train", action="store_true", help="also train when the machine is idle")
     s.add_argument("--quiet", action="store_true", help="do not log connections")
+    train_opts(s)
     s.set_defaults(func=cmd_serve)
 
     s = sub.add_parser("token", help="show the pairing token")
