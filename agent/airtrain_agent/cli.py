@@ -210,6 +210,8 @@ def cmd_config(args: argparse.Namespace) -> int:
     from dataclasses import asdict
 
     for k, v in asdict(cfg).items():
+        if k == "profile" and v:
+            v = f"<{v.get('backend', '?')} profile from airtrain analysis>"
         print(f"{k} = {v}")
     return 0
 
@@ -218,6 +220,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="airtrain", description="AirTrain device agent")
     p.add_argument("--version", action="version", version=f"airtrain {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
+
+    from .flow import add_parsers
+
+    add_parsers(sub)
 
     s = sub.add_parser("status", help="print a one-shot hardware and idle snapshot")
     s.add_argument("--json", action="store_true", help="print the raw telemetry JSON")
