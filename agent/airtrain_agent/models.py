@@ -7,6 +7,7 @@ from typing import Any
 
 VOCAB = 96  # printable ASCII
 CONTEXT = 128
+IMAGE = 128  # resnet18-ft input size
 
 
 def _tiny_gpt(torch: Any) -> Any:
@@ -44,6 +45,12 @@ def build_model(job_id: str, torch: Any) -> Any:
         )
     if job_id == "char-gpt-tiny":
         return _tiny_gpt(torch)
+    if job_id == "resnet18-ft":
+        import torchvision
+
+        # TODO(datasets): start from ImageNet weights (weights="IMAGENET1K_V1") once Imagenette is wired in;
+        # without real images there is nothing to fine-tune from, so it starts from scratch for now.
+        return torchvision.models.resnet18(weights=None, num_classes=10)
     raise KeyError(f"no model for job '{job_id}'")
 
 
@@ -85,4 +92,23 @@ def synthetic_data(job_id: str, torch: Any) -> tuple[Any, Any]:
         windows = torch.stack([ids[s : s + CONTEXT + 1] for s in starts.tolist()])
         ds = torch.utils.data.TensorDataset(windows[:, :-1], windows[:, 1:])
         return tuple(torch.utils.data.random_split(ds, [4096, 512], generator=g))
+    if job_id == "resnet18-ft":
+        return _SyntheticImages(torch, 2048, 0), _SyntheticImages(torch, 256, 10_000)
     raise KeyError(f"no synthetic data for job '{job_id}'")
+
+
+def _SyntheticImages(torch: Any, n: int, offset: int) -> Any:
+    """Images generated on the fly (no large tensors in RAM): noise plus a fixed low-frequency pattern per class."""
+    g = torch.Generator().manual_seed(1)
+    patterns = torch.nn.functional.interpolate(torch.randn(10, 3, 8, 8, generator=g), size=IMAGE, mode="bilinear")
+
+    class Images(torch.utils.data.Dataset):
+        def __len__(self) -> int:
+            return n
+
+        def __getitem__(self, i: int) -> tuple[Any, int]:
+            y = i % 10
+            noise = torch.randn(3, IMAGE, IMAGE, generator=torch.Generator().manual_seed(offset + i))
+            return patterns[y] + noise, y
+
+    return Images()
