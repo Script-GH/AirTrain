@@ -1559,7 +1559,7 @@ class NetworkScreen extends ConsumerStatefulWidget {
 
 class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTickerProviderStateMixin {
   late final _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))..repeat();
-  bool _india = false;
+  bool? _india; // null until the user picks: zoom to India when every point is there
 
   @override
   void dispose() {
@@ -1580,6 +1580,18 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
     final clusters = {for (final n in nodes) ?n.cluster?.id};
     final unmapped = nodes.where((n) => !n.onMap).length;
     final sorted = [...nodes]..sort((a, b) => a.state.index.compareTo(b.state.index));
+    bool inIndia(double? lat, double? lon) =>
+        lat != null &&
+        lon != null &&
+        indiaMap.latMin <= lat &&
+        lat <= indiaMap.latMax &&
+        indiaMap.lonMin <= lon &&
+        lon <= indiaMap.lonMax;
+    final placed = nodes.where((n) => n.onMap);
+    final india =
+        _india ??
+        (placed.isNotEmpty &&
+            placed.every((n) => inIndia(n.lat, n.lon) && (!n.linked || inIndia(n.cluster!.lat, n.cluster!.lon))));
 
     return Scaffold(
       body: SafeArea(
@@ -1667,7 +1679,7 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
                       const Spacer(),
                       _Seg(
                         labels: const ['World', 'India'],
-                        index: _india ? 1 : 0,
+                        index: india ? 1 : 0,
                         onTap: (i) => setState(() => _india = i == 1),
                       ),
                     ],
@@ -1675,7 +1687,7 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
                   const SizedBox(height: 14),
                   LayoutBuilder(
                     builder: (_, c) {
-                      final region = _india ? indiaMap : worldMap;
+                      final region = india ? indiaMap : worldMap;
                       return SizedBox(
                         width: c.maxWidth,
                         height: c.maxWidth * region.aspect,
