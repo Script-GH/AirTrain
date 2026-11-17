@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Needed to reach the AirTrain PC agent over ws:// on the local network. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
+        android:usesCleartextTraffic="true"
         android:label="airtrain"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
