@@ -1,4 +1,4 @@
-"""Local training loop (CIFAR-10 CNN) that runs in a background thread.
+"""Local training loop for the catalog jobs, run in a background thread.
 
 torch/torchvision are imported lazily so the rest of the agent works without the
 [train] extra. Training only advances while `allow(True)` is set; the controller
@@ -43,12 +43,20 @@ class Trainer:
         batch_size: int = 64,
         dataset: str = "cifar10",
         device: str = "auto",
+        job: str = "cifar10-cnn",
+        lr: float = 1e-3,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.rounds = rounds
         self.steps_per_round = steps_per_round
         self.batch_size = batch_size
-        self.dataset = dataset
+        self.job = job
+        self.lr = lr
+        from .models import has_real_dataset
+
+        # Jobs without a real dataset loader yet train on generated data.
+        # TODO(datasets): Tiny Shakespeare for char-gpt-tiny, Imagenette for resnet18-ft.
+        self.dataset = dataset if has_real_dataset(job) else "synthetic"
         self.device_pref = device
         self._allowed = threading.Event()
         self._stop = threading.Event()
@@ -66,7 +74,9 @@ class Trainer:
             "samples": 0,
             "samples_per_s": 0.0,
             "device": None,
-            "dataset": dataset,
+            "job": job,
+            "batch_size": batch_size,
+            "dataset": self.dataset,
             "history": [],  # [{round, loss, accuracy, samples}]
             "error": None,
         }
@@ -124,23 +134,11 @@ class Trainer:
             self._set(status="error", error=f"{type(e).__name__}: {e}")
 
     def _data(self, torch: Any, torchvision: Any) -> tuple[Any, Any]:
-        T = torchvision.transforms
+        from . import models
+
         if self.dataset == "synthetic":
-            g = torch.Generator().manual_seed(0)
-            x = torch.randn(4096, 3, 32, 32, generator=g)
-            y = torch.randint(0, 10, (4096,), generator=g)
-            x += y.view(-1, 1, 1, 1).float() * 0.1  # learnable signal
-            ds = torch.utils.data.TensorDataset(x, y)
-            train, test = torch.utils.data.random_split(ds, [3584, 512], generator=g)
-            return train, test
-        norm = T.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
-        train_tf = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(), T.ToTensor(), norm])
-        test_tf = T.Compose([T.ToTensor(), norm])
-        root = str(self.data_dir)
-        train = torchvision.datasets.CIFAR10(root, train=True, download=True, transform=train_tf)
-        test = torchvision.datasets.CIFAR10(root, train=False, download=True, transform=test_tf)
-        test = torch.utils.data.Subset(test, range(2000))
-        return train, test
+            return models.synthetic_data(self.job, torch)
+        return models.real_data(self.job, torch, torchvision, self.data_dir)
 
     def _train(self) -> None:
         check_available()
@@ -159,13 +157,11 @@ class Trainer:
         loader = torch.utils.data.DataLoader(train, batch_size=self.batch_size, shuffle=True, drop_last=True)
         test_loader = torch.utils.data.DataLoader(test, batch_size=256)
 
-        model = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Flatten(), nn.Linear(128 * 4 * 4, 256), nn.ReLU(), nn.Linear(256, 10),
-        ).to(dev)
-        opt = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
+        from .models import build_model
+
+        model = build_model(self.job, torch).to(dev)
+        # Adam, as assumed by the memory estimate in `airtrain analysis`.
+        opt = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
         loss_fn = nn.CrossEntropyLoss()
         batches = iter(loader)
 
@@ -184,7 +180,7 @@ class Trainer:
                     x, y = next(batches)
                 x, y = x.to(dev, non_blocking=True), y.to(dev, non_blocking=True)
                 opt.zero_grad(set_to_none=True)
-                loss = loss_fn(model(x), y)
+                loss = loss_fn(*_flat(model(x), y))
                 loss.backward()
                 opt.step()
                 running += loss.item() * len(y)
@@ -219,6 +215,14 @@ class Trainer:
         with torch.no_grad():
             for x, y in loader:
                 x, y = x.to(dev), y.to(dev)
-                correct += (model(x).argmax(1) == y).sum().item()
-                total += len(y)
+                logits, target = _flat(model(x), y)
+                correct += (logits.argmax(1) == target).sum().item()
+                total += target.numel()
         return correct / max(total, 1)
+
+
+def _flat(logits: Any, y: Any) -> tuple[Any, Any]:
+    """(batch, classes) stays as is; sequence outputs (batch, time, vocab) are flattened per token."""
+    if logits.dim() == 3:
+        return logits.flatten(0, 1), y.flatten()
+    return logits, y
