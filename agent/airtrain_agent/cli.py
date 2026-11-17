@@ -142,6 +142,38 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_train(args: argparse.Namespace) -> int:
+    ctrl, _, _ = _make_controller(args, True)
+    if ctrl is None:
+        return 2
+    ctrl.start()
+    last = None
+    try:
+        while True:
+            snap = ctrl.snapshot()
+            p = snap["train"]
+            line = (
+                f"[{p['status']:>8}] round {p['round']}/{p['total_rounds']} step {p['step']}/{p['steps_per_round']}"
+                f"  loss {_fmt(p['loss'], nd=3)}  acc {_fmt(p['accuracy'] and p['accuracy'] * 100, '%', 1)}"
+                f"  {p['samples_per_s']:.0f} samples/s  {p['device'] or ''}"
+            )
+            if snap["blockers"]:
+                line += f"  waiting: {', '.join(snap['blockers'])}"
+            if line != last:
+                print(line, flush=True)
+                last = line
+            if p["status"] in ("done", "error", "stopped"):
+                if p["error"]:
+                    print(f"error: {p['error']}", file=sys.stderr)
+                    return 1
+                return 0
+            time.sleep(1)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        ctrl.stop()
+
+
 def cmd_token(args: argparse.Namespace) -> int:
     cfg, _ = load_config()
     if args.reset:
@@ -196,6 +228,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--quiet", action="store_true", help="do not log connections")
     train_opts(s)
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("train", help="train locally when idle (needs the [train] extra)")
+    train_opts(s)
+    s.set_defaults(func=cmd_train)
 
     s = sub.add_parser("token", help="show the pairing token")
     s.add_argument("--reset", action="store_true", help="generate a new token")
