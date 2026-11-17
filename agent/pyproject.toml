@@ -20,6 +20,7 @@ packages = ["airtrain_agent"]
 
 [project.optional-dependencies]
 train = ["torch>=2.1", "torchvision>=0.16"]
+qr = ["qrcode>=7"]
 
 [project.scripts]
 airtrain = "airtrain_agent.cli:main"

@@ -68,6 +68,16 @@ def print_status(s: dict[str, Any]) -> None:
         print(f"  {k.ljust(w)}  {v}")
 
 
+def _qr(url: str) -> None:
+    try:
+        import qrcode  # optional
+    except ImportError:
+        return
+    q = qrcode.QRCode(border=1)
+    q.add_data(url)
+    q.print_ascii(invert=True)
+
+
 # ---------------- commands ----------------
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -125,6 +135,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  Token    {token}")
     print(f"  App URL  {url}")
     print(f"  Training {'on, ' + ('idle-gated' if ctrl.require_idle else 'always (no idle check)') if ctrl.trainer else 'off (add --train)'}")
+    _qr(url)
     print("In the app: Overview > + > paste the URL (or host:port and token). Ctrl+C to stop.", flush=True)
     ctrl.start()
 
