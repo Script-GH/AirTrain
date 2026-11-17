@@ -37,6 +37,27 @@ def _xprintidle_seconds() -> float | None:
     return None
 
 
+def _gnome_idle_seconds() -> float | None:
+    """GNOME (X11 or Wayland) exposes idle time over D-Bus."""
+    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS") or not shutil.which("gdbus"):
+        return None
+    try:
+        out = subprocess.run(
+            [
+                "gdbus", "call", "--session",
+                "--dest", "org.gnome.Mutter.IdleMonitor",
+                "--object-path", "/org/gnome/Mutter/IdleMonitor/Core",
+                "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime",
+            ],
+            capture_output=True, text=True, timeout=2,
+        )
+        if out.returncode == 0:  # prints "(uint64 12345,)"
+            return int(out.stdout.split()[1].rstrip(",)")) / 1000.0
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def _tty_idle_seconds() -> float | None:
     """Same idea as `w`: time since the most recent input on any terminal device."""
     newest = 0.0
@@ -61,6 +82,9 @@ def user_idle_seconds() -> tuple[float | None, str]:
     v = _xprintidle_seconds()
     if v is not None:
         return v, "xprintidle"
+    v = _gnome_idle_seconds()
+    if v is not None:
+        return v, "gnome"
     v = _tty_idle_seconds()
     if v is not None:
         return v, "tty"
