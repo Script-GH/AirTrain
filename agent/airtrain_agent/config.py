@@ -53,6 +53,20 @@ class Config:
             except OSError:
                 pass
 
+    def set(self, key: str, value: str) -> None:
+        types = {f.name: f.type for f in fields(self)}
+        if key not in types or key == "device_id":
+            raise KeyError(key)
+        current = getattr(self, key)
+        if isinstance(current, bool):
+            setattr(self, key, value.lower() in ("1", "true", "yes", "on"))
+        elif isinstance(current, int):
+            setattr(self, key, int(value))
+        elif isinstance(current, float):
+            setattr(self, key, float(value))
+        else:
+            setattr(self, key, value)
+
 
 def load_config() -> tuple[Config, bool]:
     """Load the config, creating it (with a new pairing token) on first run.

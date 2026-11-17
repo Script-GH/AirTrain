@@ -129,6 +129,25 @@ def cmd_token(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_config(args: argparse.Namespace) -> int:
+    cfg, _ = load_config()
+    for item in args.set or []:
+        key, _, value = item.partition("=")
+        try:
+            cfg.set(key.strip(), value.strip())
+        except (KeyError, ValueError):
+            print(f"error: cannot set '{item}'", file=sys.stderr)
+            return 2
+    if args.set:
+        cfg.save()
+    print(f"# {cfg.path}")
+    from dataclasses import asdict
+
+    for k, v in asdict(cfg).items():
+        print(f"{k} = {v}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="airtrain", description="AirTrain device agent")
     p.add_argument("--version", action="version", version=f"airtrain {__version__}")
@@ -148,6 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("token", help="show the pairing token")
     s.add_argument("--reset", action="store_true", help="generate a new token")
     s.set_defaults(func=cmd_token)
+
+    s = sub.add_parser("config", help="show or change settings")
+    s.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="e.g. --set idle_minutes=10 --set max_temp_c=80")
+    s.set_defaults(func=cmd_config)
     return p
 
 
