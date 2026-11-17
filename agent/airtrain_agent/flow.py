@@ -237,6 +237,24 @@ def cmd_connect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_disconnect(args: argparse.Namespace) -> int:
+    from .coordinator import CoordinatorError, get_coordinator
+
+    cfg, _ = load_config()
+    if not cfg.session:
+        print("Not connected to any cluster.")
+        return 0
+    s = cfg.session
+    try:
+        get_coordinator(None if s.get("coordinator") == "mock" else s.get("coordinator")).leave(s)
+    except CoordinatorError as e:
+        print(f"  ! could not reach the coordinator ({e}); forgetting the session locally")
+    cfg.session = {}
+    cfg.save()
+    print(f"Disconnected from {s.get('cluster_name')}.")
+    return 0
+
+
 def require_session(cfg: Config) -> bool:
     if not require_analysis(cfg):
         return False
@@ -259,3 +277,6 @@ def add_parsers(sub: Any) -> None:
     s.add_argument("--region", help="your region for ranking, e.g. ap-south-1 (default: config or time zone)")
     s.add_argument("--no-probe", action="store_true", help="do not measure latency; use simulated values")
     s.set_defaults(func=cmd_connect)
+
+    s = sub.add_parser("disconnect", help="leave the current cluster")
+    s.set_defaults(func=cmd_disconnect)
