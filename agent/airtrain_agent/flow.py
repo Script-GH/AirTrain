@@ -146,9 +146,116 @@ def require_analysis(cfg: Config) -> bool:
     return False
 
 
+# ---------------- step 2: connect ----------------
+
+def print_ranked(ranked: list, my_sps: float) -> None:
+    head = (f"  {'#':<3}{'Cluster':<24}{'Region':<16}{'Devices':>8}{'Free':>6}"
+            f"{'Avg samples/s':>15}{'Latency':>10}{'Score':>7}")
+    print(head)
+    print("  " + "-" * (len(head) - 2))
+    for i, r in enumerate(ranked, 1):
+        c = r.cluster
+        lat = f"{r.latency_ms:.0f} ms" + ("" if r.measured else "*")
+        score = f"{r.score:.2f}" if r.eligible else r.reason
+        job = "  (any job)" if c.job_id == "*" else ""
+        print(f"  {i:<3}{c.name:<24}{c.region:<16}{c.devices:>5}/{c.capacity:<2}{c.free_slots:>6}"
+              f"{c.avg_samples_per_s:>15,.0f}{lat:>10}{score:>7}{job}")
+    if any(not r.measured for r in ranked):
+        print("  * simulated latency (region endpoint not reachable)")
+    print(f"  Score: latency 30%, throughput similarity to this device ({my_sps:,.0f} samples/s) 25%, "
+          "job match 20%, region 15%, free slots 10%.")
+
+
+def cmd_connect(args: argparse.Namespace) -> int:
+    from .coordinator import CoordinatorError, get_coordinator, probe_latencies
+    from .jobs import get_job
+    from .ranking import guess_region, rank
+
+    cfg, _ = load_config()
+    if not require_analysis(cfg):
+        return 2
+    job = get_job(cfg.job)
+    my_sps = float(cfg.profile.get("samples_per_s") or 1.0)
+    region = args.region or cfg.region or guess_region()
+    coord = get_coordinator(args.coordinator, typical_samples_per_s=my_sps)
+    where = "local mock coordinator" if coord.name == "mock" else coord.name
+    print(f"Finding clusters for {job.name} via {where} (your region: {region})...")
+    try:
+        clusters = coord.list_clusters(job.id)
+    except CoordinatorError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if not clusters:
+        print("No clusters are training this job right now. Try again later or pick another job.")
+        return 1
+    print("Measuring latency to each cluster...")
+    latencies = probe_latencies(clusters, enabled=not args.no_probe)
+    ranked = rank(clusters, job.id, my_sps, latencies, region)
+    print()
+    print_ranked(ranked, my_sps)
+    print()
+
+    eligible = [r for r in ranked if r.eligible]
+    if args.cluster:
+        pick = next((r for r in ranked if r.cluster.id == args.cluster), None)
+        if pick is None or not pick.eligible:
+            why = "not found" if pick is None else pick.reason
+            print(f"error: cannot join cluster '{args.cluster}' ({why})", file=sys.stderr)
+            return 1
+    elif eligible:
+        pick = eligible[0]
+    else:
+        print("error: every cluster for this job is full right now.", file=sys.stderr)
+        return 1
+
+    if cfg.session:
+        try:
+            get_coordinator(None if cfg.session.get("coordinator") == "mock" else cfg.session["coordinator"]).leave(
+                cfg.session
+            )
+        except CoordinatorError:
+            pass
+    device = {
+        "device_id": cfg.device_id,
+        "job_id": job.id,
+        "name": cfg.name or cfg.profile.get("hostname"),
+        "backend": cfg.profile.get("backend"),
+        "samples_per_s": my_sps,
+        "batch_size": cfg.batch_size,
+        "region": region,
+    }
+    try:
+        session = coord.join(pick.cluster, device, pick.latency_ms, pick.measured)
+    except (CoordinatorError, RuntimeError) as e:
+        print(f"error: could not join {pick.cluster.name}: {e}", file=sys.stderr)
+        return 1
+    cfg.session = session.to_dict()
+    cfg.save()
+    print(f"Connected to {session.cluster_name} ({session.devices} devices, {session.region}, "
+          f"{session.latency_ms:.0f} ms)")
+    print("Saved. Next step: airtrain start training")
+    return 0
+
+
+def require_session(cfg: Config) -> bool:
+    if not require_analysis(cfg):
+        return False
+    if cfg.session and cfg.session.get("job_id") == cfg.job:
+        return True
+    print("error: run `airtrain connect` first to join a cluster.", file=sys.stderr)
+    return False
+
+
 def add_parsers(sub: Any) -> None:
     s = sub.add_parser("analysis", help="step 1: profile this machine and pick a training job")
     s.add_argument("--job", help="job id to select without asking (e.g. cifar10-cnn)")
     s.add_argument("--batch", type=int, help="override the recommended batch size")
     s.add_argument("--no-benchmark", action="store_true", help="skip the quick compute benchmark")
     s.set_defaults(func=cmd_analysis)
+
+    s = sub.add_parser("connect", help="step 2: find clusters for the chosen job and join the best one")
+    s.add_argument("--coordinator", metavar="URL", help="coordinator service URL (default: local mock)")
+    s.add_argument("--cluster", help="join this cluster id instead of the top-ranked one")
+    s.add_argument("--region", help="your region for ranking, e.g. ap-south-1 (default: config or time zone)")
+    s.add_argument("--no-probe", action="store_true", help="do not measure latency; use simulated values")
+    s.set_defaults(func=cmd_connect)
