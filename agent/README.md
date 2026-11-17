@@ -107,6 +107,9 @@ Settings:
 | --- | --- | --- |
 | `name` | hostname | Device name shown in the app |
 | `region` | from time zone | Your region for cluster ranking, e.g. `ap-south-1` |
+| `location` | empty | Where the device is, e.g. `Bengaluru, IN` or `12.97,77.59` |
+| `lat`, `lon` | empty | Exact coordinates (override `location`'s) |
+| `geo_lookup` | true | Allow the one-time IP geolocation lookup when no location is set |
 | `port` | 8765 | Default port for `serve` |
 | `gpu_index` | 0 | Which NVIDIA GPU to monitor |
 | `idle_minutes` | 5 | No keyboard or mouse input for this long counts as idle |
@@ -114,6 +117,18 @@ Settings:
 | `resume_temp_margin_c` | 5 | Resume once the temperature is this far below `max_temp_c` |
 | `min_battery_pct` | 50 | On battery below this, the device counts as busy |
 | `gpu_busy_util` | 30 | Another process using the GPU above this % makes the device busy |
+
+## Location
+
+The phone app's network map places each device using the `location` the agent reports. The agent works it out in this order:
+
+1. **Config override.** Use `airtrain config --set location="Bengaluru, IN"`. Common cities get coordinates automatically. You can also give exact coordinates with `--set lat=12.97 --set lon=77.59`, or `--set location="12.97,77.59"`.
+2. **Cached IP lookup**, kept for 30 days in the config.
+3. **One-time IP geolocation lookup.** This calls ipapi.co, falling back to ipwho.is. Both are free HTTPS services that need no key. The request times out after 3 s.
+
+If none of these work, the location is `null`. The device still shows in the app's list but is not drawn on the map.
+
+IP geolocation is city level at best and often reports your ISP's city rather than yours. For privacy, turn the lookup off for good with `airtrain config --set geo_lookup=false`, or for one run with `--no-geo` on `serve`, `status`, `analysis` or `start`. Both `airtrain status` and `airtrain analysis` print the detected location.
 
 ## When it trains
 
@@ -216,6 +231,7 @@ Any sensor the machine does not expose is `null`. Units are in the field names.
   "state": "training",
   "paused": false,
   "uptime_s": 120,
+  "location": {"city": "Bengaluru", "country": "IN", "lat": 12.97, "lon": 77.59, "source": "config"},
   "limits": {"max_temp_c": 83.0, "idle_minutes": 5.0, "min_battery_pct": 50.0},
   "job": {"id": "cifar10-cnn", "name": "CIFAR-10 CNN", "batch_size": 512},
   "cluster": {
@@ -225,7 +241,9 @@ Any sensor the machine does not expose is `null`. Units are in the field names.
     "city": "Bengaluru, IN",
     "devices": 9,
     "latency_ms": 18.4,
-    "coordinator": "mock"
+    "coordinator": "mock",
+    "lat": 19.08,
+    "lon": 72.88
   },
   "train": {
     "status": "running",
@@ -251,6 +269,8 @@ Field notes:
 - `gpu.available` is `false` when no NVIDIA GPU or driver is found. `gpu.reason` then says why, and every other GPU field is absent.
 - `state` is one of `training`, `idle` or `busy`. `blockers` lists why the device is busy.
 - `throttle_reasons` values: `gpu_idle`, `app_clock_setting`, `sw_power_cap`, `hw_slowdown`, `sync_boost`, `sw_thermal`, `hw_thermal`, `hw_power_brake`, `display_clock`. `throttled` is true when any power or thermal reason is active.
+- `location.source` is `config` or `ip`. `location` is `null` when it's unknown or the lookup is disabled. A city without known coordinates has `lat` and `lon` set to `null`.
+- `cluster.lat`/`lon` place the cluster's coordinator at its region, for example `ap-south-1` at Mumbai.
 - `job` is `null` until `airtrain analysis` has run, and `cluster` is `null` until `airtrain connect`.
 - `train` is `null` unless the agent runs with `--train`. `train.status` is one of `starting`, `loading`, `waiting`, `running`, `done`, `error` or `stopped`. `history` holds the last 50 rounds.
 
@@ -315,4 +335,5 @@ python agent/tests/smoke_flow.py                                 # analysis -> c
 - `char-gpt-tiny` and `resnet18-ft` train on generated data until Tiny Shakespeare and Imagenette loaders land.
 - Throughput numbers in `analysis` are estimates, from the benchmark or the GPU spec table. Measured speed shows in `start training`.
 - Training runs locally on each machine. Federated averaging through the coordinator is the next step.
+- IP geolocation is city level and may show the ISP's city. Set `location` for an exact spot.
 - Traffic is plain `ws://` on the LAN, protected by the pairing token. Do not expose the port to the internet.
