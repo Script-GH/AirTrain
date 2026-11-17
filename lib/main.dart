@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'agent_link.dart';
 import 'world_mask.dart';
 
 void main() => runApp(const ProviderScope(child: AirTrainApp()));
@@ -255,11 +256,24 @@ class Peer {
 /// Where the FedAvg coordinator runs. Every device talks only to it (star topology).
 const coordinator = (name: 'Coordinator', city: 'Mumbai, IN', lat: 19.07, lon: 72.88);
 
+/// A paired PC agent as shown in the pairing sheet.
+class AgentInfo {
+  const AgentInfo({required this.id, required this.url, required this.status, this.error});
+  final String id;
+  final String url;
+  final LinkStatus status;
+  final String? error;
+}
+
 class SwarmState {
-  const SwarmState(this.devices, this.job, [this.peers = const []]);
+  const SwarmState(this.devices, this.job, [this.peers = const [], this.agents = const []]);
   final List<Device> devices;
   final Job job;
   final List<Peer> peers;
+  final List<AgentInfo> agents;
+
+  /// True once at least one PC agent is paired; the app then shows real devices.
+  bool get live => agents.isNotEmpty;
 
   int get activeCount =>
       devices.where((d) => d.active).length + peers.where((p) => p.state == DeviceState.training).length;
@@ -428,16 +442,29 @@ Job? jobFromTelemetry(Iterable<Map<String, dynamic>> snaps, DateTime startedAt) 
   );
 }
 
-// ---------- Mock data source (replace with WebSocket later) ----------
+// ---------- Data source: demo simulation, replaced by real agents once paired ----------
 class SwarmNotifier extends Notifier<SwarmState> {
   final _rng = Random();
   Timer? _timer;
   int _tick = 0;
 
+  // Real agents.
+  final _links = <String, AgentLink>{};
+  final _agentInfo = <String, AgentInfo>{};
+  final _snaps = <String, Map<String, dynamic>>{};
+  final _liveDevices = <String, Device>{};
+  DateTime? _liveStart;
+  SwarmState? _demo; // demo state, kept so unpairing everything falls back to it
+
   @override
   SwarmState build() {
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _step());
-    ref.onDispose(() => _timer?.cancel());
+    ref.onDispose(() {
+      _timer?.cancel();
+      for (final l in _links.values) {
+        l.close();
+      }
+    });
     return SwarmState(
       const [
         Device(
@@ -472,6 +499,15 @@ class SwarmNotifier extends Notifier<SwarmState> {
 
   void _step() {
     _tick++;
+    if (state.live) {
+      _demo = _advanceDemo(_demo!);
+      state = SwarmState(state.devices, state.job, _demo!.peers, state.agents);
+      return;
+    }
+    state = _advanceDemo(state);
+  }
+
+  SwarmState _advanceDemo(SwarmState state) {
     final devices = state.devices.map((d) {
       var s = d.state;
       if (d.id == 'mac' && _tick == 8) s = DeviceState.training; // became idle-eligible
@@ -519,15 +555,76 @@ class SwarmNotifier extends Notifier<SwarmState> {
         log: [RoundLog(r, a, l, n, total), ...job.log],
       );
     }
-    state = SwarmState(devices, job, peers);
+    return SwarmState(devices, job, peers);
   }
 
   void togglePause(String id) {
+    final dev = state.devices.firstWhere((d) => d.id == id);
+    final link = dev.linkId == null ? null : _links[dev.linkId];
+    link?.send(dev.paused ? 'resume' : 'pause');
     state = SwarmState(
       [for (final d in state.devices) d.id == id ? d.copyWith(paused: !d.paused) : d],
       state.job,
       state.peers,
+      state.agents,
     );
+  }
+
+  // ---- pairing ----
+  /// Pairs a PC agent. Throws [FormatException] if the address or token is invalid.
+  void addAgent(String address, {String token = ''}) {
+    final uri = parseAgentUri(address, token);
+    final id = '${uri.host}:${uri.port}';
+    _links.remove(id)?.close();
+    final real = AgentLink(
+      uri,
+      onMessage: (m) => _onMessage(id, m),
+      onStatus: (st, err) => _onStatus(id, uri, st, err),
+    );
+    _links[id] = real;
+    _agentInfo[id] = AgentInfo(id: id, url: '${uri.host}:${uri.port}', status: LinkStatus.connecting);
+    _demo ??= state;
+    _publish();
+    real.connect();
+  }
+
+  void removeAgent(String id) {
+    _links.remove(id)?.close();
+    _agentInfo.remove(id);
+    _snaps.remove(id);
+    _liveDevices.remove(id);
+    if (_links.isEmpty) {
+      _liveStart = null;
+      state = _demo ?? state;
+      _demo = null;
+    } else {
+      _publish();
+    }
+  }
+
+  void _onStatus(String id, Uri uri, LinkStatus st, String? err) {
+    if (!_links.containsKey(id)) return;
+    _agentInfo[id] = AgentInfo(id: id, url: '${uri.host}:${uri.port}', status: st, error: err);
+    if (st != LinkStatus.connected) {
+      final d = _liveDevices[id];
+      if (d != null) _liveDevices[id] = d.copyWith(state: DeviceState.offline);
+    }
+    _publish();
+  }
+
+  void _onMessage(String id, Map<String, dynamic> m) {
+    if (m['type'] != 'telemetry' || !_links.containsKey(id)) return;
+    _snaps[id] = m;
+    _liveDevices[id] = deviceFromTelemetry(m, id, _liveDevices[id]);
+    if (m['train'] != null) _liveStart ??= DateTime.now();
+    _publish();
+  }
+
+  void _publish() {
+    final job =
+        jobFromTelemetry(_snaps.values, _liveStart ?? DateTime.now()) ??
+        Job(round: 0, totalRounds: 1, acc: const [], loss: const [], log: const [], startedAt: DateTime.now());
+    state = SwarmState(_liveDevices.values.toList(), job, (_demo ?? state).peers, _agentInfo.values.toList());
   }
 }
 
