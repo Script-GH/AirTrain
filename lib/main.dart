@@ -241,52 +241,6 @@ class Job {
   );
 }
 
-/// A device owned by someone else that has joined the same training job.
-class Peer {
-  const Peer({
-    required this.id,
-    required this.name,
-    required this.hw,
-    required this.city,
-    required this.lat,
-    required this.lon,
-    required this.baseLatency,
-    this.joinAt = 0,
-    this.leaveAt = -1,
-    this.offline = false,
-    this.state = DeviceState.idle,
-    this.latency = 0,
-  });
-  final String id, name, hw, city;
-  final double lat, lon;
-  final int baseLatency, joinAt, leaveAt;
-  final bool offline;
-  final DeviceState state;
-  final int latency;
-
-  Peer step(int tick, Random rng) => Peer(
-    id: id,
-    name: name,
-    hw: hw,
-    city: city,
-    lat: lat,
-    lon: lon,
-    baseLatency: baseLatency,
-    joinAt: joinAt,
-    leaveAt: leaveAt,
-    offline: offline,
-    state: offline
-        ? DeviceState.offline
-        : tick >= joinAt && (leaveAt < 0 || tick < leaveAt)
-        ? DeviceState.training
-        : DeviceState.idle,
-    latency: offline ? 0 : baseLatency + rng.nextInt(max(4, baseLatency ~/ 6)),
-  );
-}
-
-/// Where the FedAvg coordinator runs. Every device talks only to it (star topology).
-const coordinator = (name: 'Coordinator', city: 'Mumbai, IN', lat: 19.07, lon: 72.88);
-
 /// A paired PC agent as shown in the pairing sheet.
 class AgentInfo {
   const AgentInfo({required this.id, required this.url, required this.status, this.error});
@@ -297,96 +251,24 @@ class AgentInfo {
 }
 
 class SwarmState {
-  const SwarmState(this.devices, this.job, [this.peers = const [], this.agents = const []]);
+  const SwarmState(this.devices, this.job, [this.agents = const []]);
   final List<Device> devices;
   final Job job;
-  final List<Peer> peers;
   final List<AgentInfo> agents;
 
   /// True once at least one PC agent is paired; the app then shows real devices.
   bool get live => agents.isNotEmpty;
 
-  int get activeCount =>
-      devices.where((d) => d.active).length + peers.where((p) => p.state == DeviceState.training).length;
-  int get connectedCount =>
-      devices.where((d) => d.state != DeviceState.offline).length + peers.where((p) => !p.offline).length;
-  int get totalCount => devices.length + peers.length;
-}
+  /// Devices reported by paired agents running the CLI. Demo devices never count as connected.
+  List<Device> get agentDevices => [
+    for (final d in devices)
+      if (d.linkId != null) d,
+  ];
 
-const _mockPeers = [
-  Peer(id: 'lab4', name: 'Lab PC 04', hw: 'RTX 3060', city: 'Bengaluru, IN', lat: 13.03, lon: 77.50, baseLatency: 14),
-  Peer(
-    id: 'm2',
-    name: 'MacBook Pro M2',
-    hw: 'Apple M2 Pro',
-    city: 'Hyderabad, IN',
-    lat: 17.39,
-    lon: 78.49,
-    baseLatency: 31,
-    joinAt: 5,
-  ),
-  Peer(
-    id: 'pune',
-    name: 'Gaming PC',
-    hw: 'RTX 4060',
-    city: 'Pune, IN',
-    lat: 18.52,
-    lon: 73.86,
-    baseLatency: 22,
-    joinAt: 12,
-  ),
-  Peer(
-    id: 'del',
-    name: 'Workstation',
-    hw: 'RTX A4000',
-    city: 'Delhi, IN',
-    lat: 28.61,
-    lon: 77.21,
-    baseLatency: 38,
-    joinAt: 20,
-  ),
-  Peer(
-    id: 'ber',
-    name: 'Desktop',
-    hw: 'RTX 3080',
-    city: 'Berlin, DE',
-    lat: 52.52,
-    lon: 13.40,
-    baseLatency: 142,
-    joinAt: 3,
-  ),
-  Peer(
-    id: 'tyo',
-    name: 'Mac Studio',
-    hw: 'Apple M3 Max',
-    city: 'Tokyo, JP',
-    lat: 35.68,
-    lon: 139.69,
-    baseLatency: 96,
-    joinAt: 2,
-    leaveAt: 30,
-  ),
-  Peer(
-    id: 'aus',
-    name: 'Tower PC',
-    hw: 'RTX 4070',
-    city: 'Austin, US',
-    lat: 30.27,
-    lon: -97.74,
-    baseLatency: 231,
-    joinAt: 16,
-  ),
-  Peer(
-    id: 'sp',
-    name: 'Laptop',
-    hw: 'GTX 1660 Ti',
-    city: 'São Paulo, BR',
-    lat: -23.55,
-    lon: -46.63,
-    baseLatency: 0,
-    offline: true,
-  ),
-];
+  int get activeCount => agentDevices.where((d) => d.active).length;
+  int get connectedCount => agentDevices.where((d) => d.state != DeviceState.offline).length;
+  int get totalCount => agentDevices.length;
+}
 
 // ---------- Agent telemetry -> models ----------
 double _n(Object? v, [double fallback = 0]) => v is num ? v.toDouble() : fallback;
@@ -533,49 +415,35 @@ class SwarmNotifier extends Notifier<SwarmState> {
       }
     });
     _restore();
-    return SwarmState(
-      const [
-        Device(
-          id: 'pc',
-          name: 'Linux PC',
-          gpu: 'NVIDIA GPU · CUDA',
-          icon: Icons.desktop_windows_rounded,
-          vramTotal: 8,
-          state: DeviceState.training,
-          tempLimit: 83,
-          powerLimit: 170,
-          ramTotal: 16,
-          city: 'Bengaluru, IN',
-          lat: 12.97,
-          lon: 77.59,
-        ),
-        Device(
-          id: 'mac',
-          name: 'MacBook Air',
-          gpu: 'Apple Silicon · MPS',
-          icon: Icons.laptop_mac_rounded,
-          vramTotal: 8,
-          tempLimit: 95,
-          powerLimit: 25,
-          ramTotal: 8,
-          hasFan: false,
-          city: 'Bengaluru, IN',
-          lat: 12.90,
-          lon: 77.66,
-        ),
-      ],
-      Job(round: 0, totalRounds: 50, acc: const [], loss: const [], log: const [], startedAt: DateTime.now()),
-      [for (final p in _mockPeers) p.step(0, _rng)],
-    );
+    return SwarmState(const [
+      Device(
+        id: 'pc',
+        name: 'Linux PC',
+        gpu: 'NVIDIA GPU · CUDA',
+        icon: Icons.desktop_windows_rounded,
+        vramTotal: 8,
+        state: DeviceState.training,
+        tempLimit: 83,
+        powerLimit: 170,
+        ramTotal: 16,
+      ),
+      Device(
+        id: 'mac',
+        name: 'MacBook Air',
+        gpu: 'Apple Silicon · MPS',
+        icon: Icons.laptop_mac_rounded,
+        vramTotal: 8,
+        tempLimit: 95,
+        powerLimit: 25,
+        ramTotal: 8,
+        hasFan: false,
+      ),
+    ], Job(round: 0, totalRounds: 50, acc: const [], loss: const [], log: const [], startedAt: DateTime.now()));
   }
 
   void _step() {
     _tick++;
-    if (state.live) {
-      _demo = _advanceDemo(_demo!);
-      state = SwarmState(state.devices, state.job, _demo!.peers, state.agents);
-      return;
-    }
+    if (state.live) return; // paired agents drive the state
     state = _advanceDemo(state);
   }
 
@@ -611,7 +479,6 @@ class SwarmNotifier extends Notifier<SwarmState> {
       );
     }).toList();
 
-    final peers = [for (final p in state.peers) p.step(_tick, _rng)];
     int sum(List<Device> l) => l.fold<int>(0, (a, d) => a + d.samples);
     final total = sum(devices);
     var job = state.job.copyWith(throughput: (total - sum(state.devices)).toDouble());
@@ -619,7 +486,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
       final r = job.round + 1;
       final a = 0.86 * (1 - exp(-r / 10)) + (_rng.nextDouble() - 0.5) * 0.01;
       final l = 2.3 * exp(-r / 12) + 0.35 + (_rng.nextDouble() - 0.5) * 0.04;
-      final n = devices.where((d) => d.active).length + peers.where((p) => p.state == DeviceState.training).length;
+      final n = devices.where((d) => d.active).length;
       job = job.copyWith(
         round: r,
         acc: [...job.acc, a],
@@ -627,7 +494,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
         log: [RoundLog(r, a, l, n, total), ...job.log],
       );
     }
-    return SwarmState(devices, job, peers);
+    return SwarmState(devices, job);
   }
 
   void togglePause(String id) {
@@ -637,7 +504,6 @@ class SwarmNotifier extends Notifier<SwarmState> {
     state = SwarmState(
       [for (final d in state.devices) d.id == id ? d.copyWith(paused: !d.paused) : d],
       state.job,
-      state.peers,
       state.agents,
     );
   }
@@ -716,7 +582,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
     final job =
         jobFromTelemetry(_snaps.values, _liveStart ?? DateTime.now()) ??
         Job(round: 0, totalRounds: 1, acc: const [], loss: const [], log: const [], startedAt: DateTime.now());
-    state = SwarmState(_liveDevices.values.toList(), job, (_demo ?? state).peers, _agentInfo.values.toList());
+    state = SwarmState(_liveDevices.values.toList(), job, _agentInfo.values.toList());
   }
 }
 
@@ -1635,10 +1501,7 @@ class _SparkPainter extends CustomPainter {
 
 // ---------- Network ----------
 /// Devices shown on the Network tab: only those reported by a paired agent running the AirTrain CLI.
-List<Device> networkDevices(SwarmState s) => [
-  for (final d in s.devices)
-    if (d.linkId != null) d,
-];
+List<Device> networkDevices(SwarmState s) => s.agentDevices;
 
 /// One agent device on the map and in the node list.
 class NetNode {
