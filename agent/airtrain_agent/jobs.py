@@ -70,3 +70,56 @@ def get_job(job_id: str) -> Job:
         if j.id == job_id:
             return j
     raise KeyError(f"unknown job '{job_id}'. Choose one of: {', '.join(j.id for j in CATALOG)}")
+
+
+# ---------------- memory ----------------
+
+GB = 1024**3
+BYTES_PER_PARAM = 4  # fp32
+ADAM_STATE_PER_PARAM = 2  # exp_avg and exp_avg_sq
+ACTIVATION_SAFETY = 1.25  # allocator fragmentation and temporaries
+RUNTIME_OVERHEAD = {"cuda": 0.6 * GB, "cpu": 0.4 * GB}  # CUDA context + cuDNN workspace / torch runtime
+MEMORY_BUDGET = 0.8  # use at most this share of free memory
+
+
+@dataclass(frozen=True)
+class MemoryEstimate:
+    weights: float
+    grads: float
+    optimizer: float
+    activations: float
+    overhead: float
+
+    @property
+    def total(self) -> float:
+        return self.weights + self.grads + self.optimizer + self.activations + self.overhead
+
+    @property
+    def total_gb(self) -> float:
+        return self.total / GB
+
+
+def estimate_memory(job: Job, batch: int, backend: str = "cuda") -> MemoryEstimate:
+    """Training memory for one step: params + grads + Adam state + activations + runtime."""
+    p = job.params * BYTES_PER_PARAM
+    return MemoryEstimate(
+        weights=p,
+        grads=p,
+        optimizer=p * ADAM_STATE_PER_PARAM,
+        activations=job.act_bytes_per_sample * batch * ACTIVATION_SAFETY,
+        overhead=RUNTIME_OVERHEAD.get(backend, RUNTIME_OVERHEAD["cpu"]),
+    )
+
+
+def min_memory_gb(job: Job, backend: str = "cuda") -> float:
+    """Memory needed at the job's smallest batch size."""
+    return estimate_memory(job, job.batch_sizes[0], backend).total_gb
+
+
+def recommend_batch(job: Job, free_bytes: float, backend: str = "cuda") -> int | None:
+    """Largest accepted batch size that fits in MEMORY_BUDGET of free memory, or None."""
+    best = None
+    for b in job.batch_sizes:
+        if estimate_memory(job, b, backend).total <= free_bytes * MEMORY_BUDGET:
+            best = b
+    return best
