@@ -173,3 +173,58 @@ def probe_latencies(clusters: list[Cluster], enabled: bool = True) -> dict[str, 
             if ms is not None:
                 out[c.id] = (ms, True)
     return out
+
+
+class CoordinatorError(RuntimeError):
+    pass
+
+
+class HttpCoordinator(Coordinator):
+    """Client for the AirTrain coordinator service.
+
+    TODO(coordinator): the FastAPI coordinator does not exist yet. These routes are the
+    planned contract and will be finalized with it:
+      GET  {url}/v1/clusters?job=<job_id>            -> [Cluster as JSON, ...]
+      POST {url}/v1/clusters/<cluster_id>/join       body: device info -> Session as JSON
+      POST {url}/v1/clusters/<cluster_id>/leave      body: {"device_id": ...}
+    Authentication (device keys) and the Flower SuperLink address returned on join come later.
+    """
+
+    def __init__(self, url: str, timeout: float = 5.0) -> None:
+        self.url = url.rstrip("/")
+        self.name = self.url
+        self.timeout = timeout
+
+    def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        import json
+        import urllib.error
+        import urllib.request
+
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(
+            self.url + path, data=data, method=method, headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read() or b"null")
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise CoordinatorError(f"coordinator {self.url} unavailable: {e}") from e
+
+    def list_clusters(self, job_id: str) -> list[Cluster]:
+        from urllib.parse import quote
+
+        rows = self._call("GET", f"/v1/clusters?job={quote(job_id)}") or []
+        return [Cluster(**r) for r in rows]
+
+    def join(self, cluster: Cluster, device: dict[str, Any], latency_ms: float, measured: bool) -> Session:
+        body = {**device, "latency_ms": latency_ms, "latency_measured": measured}
+        r = self._call("POST", f"/v1/clusters/{cluster.id}/join", body)
+        return Session(**{**r, "coordinator": self.url})
+
+    def leave(self, session: dict[str, Any]) -> None:
+        self._call("POST", f"/v1/clusters/{session['cluster_id']}/leave", {"device_id": session["device_id"]})
+
+
+def get_coordinator(url: str | None, typical_samples_per_s: float = 500.0) -> Coordinator:
+    """HttpCoordinator for a URL, else the local mock."""
+    return HttpCoordinator(url) if url else MockCoordinator(typical_samples_per_s)
