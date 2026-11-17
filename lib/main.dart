@@ -114,6 +114,13 @@ class Device {
   final bool throttled;
   final List<double> tempHistory;
 
+  String get unitLabel => cpuOnly ? 'CPU' : 'GPU';
+  String get memLabel => cpuOnly ? 'RAM' : 'VRAM';
+
+  /// Agents report 0 for sensors the machine does not expose.
+  String get tempText => linkId != null && temp == 0 ? '—' : '${temp.toStringAsFixed(0)}°C';
+  String get powerText => linkId != null && power == 0 ? '—' : '${power.toStringAsFixed(0)}W';
+
   /// 0-100 composite load score from GPU load, heat, power draw and memory pressure.
   double get stress {
     final t = ((temp - 35) / (tempLimit - 35)).clamp(0.0, 1.0) * 100;
@@ -970,23 +977,25 @@ class HealthCard extends ConsumerWidget {
               Expanded(
                 child: Column(
                   children: [
-                    LoadBar(label: 'GPU', value: d.util / 100, text: '${d.util.toStringAsFixed(0)}%'),
+                    if (!d.cpuOnly) LoadBar(label: 'GPU', value: d.util / 100, text: '${d.util.toStringAsFixed(0)}%'),
                     LoadBar(label: 'CPU', value: d.cpu / 100, text: '${d.cpu.toStringAsFixed(0)}%'),
-                    LoadBar(
-                      label: 'VRAM',
-                      value: d.vramUsed / d.vramTotal,
-                      text: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G',
-                    ),
+                    if (!d.cpuOnly)
+                      LoadBar(
+                        label: 'VRAM',
+                        value: d.vramUsed / d.vramTotal,
+                        text: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G',
+                      ),
                     LoadBar(
                       label: 'RAM',
                       value: d.ram / d.ramTotal,
                       text: '${d.ram.toStringAsFixed(1)}/${d.ramTotal.toStringAsFixed(0)}G',
                     ),
-                    LoadBar(
-                      label: 'Power',
-                      value: d.power / d.powerLimit,
-                      text: '${d.power.toStringAsFixed(0)}/${d.powerLimit.toStringAsFixed(0)}W',
-                    ),
+                    if (d.powerText != '—')
+                      LoadBar(
+                        label: 'Power',
+                        value: d.power / d.powerLimit,
+                        text: '${d.power.toStringAsFixed(0)}/${d.powerLimit.toStringAsFixed(0)}W',
+                      ),
                   ],
                 ),
               ),
@@ -998,7 +1007,7 @@ class HealthCard extends ConsumerWidget {
               const Text('Temperature', style: TextStyle(color: C.muted, fontSize: 12)),
               const Spacer(),
               Text(
-                '${d.temp.toStringAsFixed(0)}°C',
+                d.tempText,
                 style: TextStyle(color: tempColor, fontWeight: FontWeight.w600, fontFeatures: tabular),
               ),
               Text(
@@ -1012,9 +1021,16 @@ class HealthCard extends ConsumerWidget {
           const SizedBox(height: 16),
           Row(
             children: [
-              Stat(label: 'Headroom', value: '${d.headroom.toStringAsFixed(0)}°C'),
+              Stat(label: 'Headroom', value: d.tempText == '—' ? '—' : '${d.headroom.toStringAsFixed(0)}°C'),
               Stat(label: 'Clock', value: '${d.clock.toStringAsFixed(0)} MHz'),
-              Stat(label: 'Fan', value: d.hasFan ? '${d.fan} rpm' : 'Fanless'),
+              Stat(
+                label: 'Fan',
+                value: d.hasFan
+                    ? '${d.fan} ${d.fanUnit}'
+                    : d.linkId != null
+                    ? 'n/a'
+                    : 'Fanless',
+              ),
             ],
           ),
         ],
@@ -1410,10 +1426,10 @@ class DeviceCard extends ConsumerWidget {
           const SizedBox(height: 16),
           Row(
             children: [
-              Stat(label: 'GPU', value: '${d.util.toStringAsFixed(0)}%'),
-              Stat(label: 'VRAM', value: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G'),
-              Stat(label: 'Temp', value: '${d.temp.toStringAsFixed(0)}°C'),
-              Stat(label: 'Power', value: '${d.power.toStringAsFixed(0)}W'),
+              Stat(label: d.unitLabel, value: '${d.util.toStringAsFixed(0)}%'),
+              Stat(label: d.memLabel, value: '${d.vramUsed.toStringAsFixed(1)}/${d.vramTotal.toStringAsFixed(0)}G'),
+              Stat(label: 'Temp', value: d.tempText),
+              Stat(label: 'Power', value: d.powerText),
             ],
           ),
           const SizedBox(height: 16),
