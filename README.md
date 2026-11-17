@@ -3,7 +3,7 @@
 Pool idle GPU and SoC compute across laptops and desktops to collaboratively train small models. This repo holds the mobile dashboard (Flutter) used to monitor devices and training jobs, and the device agent (`agent/`) that runs on each PC.
 
 ## Status
-- Phone dashboard: Overview, Training, Health and Network tabs. Shows demo data until a PC agent is paired, then live data.
+- Phone dashboard: Overview, Training, Health and Network tabs. Overview and Health show demo data until a PC agent is paired, then live data. The Network tab and the device counts only ever include paired PCs running the CLI. Each one sits on the map at the location its agent reports, linked to its cluster's coordinator.
 - PC agent (`agent/`, Windows and Linux): analysis -> connect -> start training flow, live GPU/CPU/RAM telemetry, idle detection, local training, pause/resume from the phone. See [agent/README.md](agent/README.md).
 - Coordinator and federated rounds: next.
 
