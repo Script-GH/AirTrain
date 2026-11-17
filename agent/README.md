@@ -102,3 +102,96 @@ New-NetFirewallRule -DisplayName "AirTrain agent" -Direction Inbound -Protocol T
 ```
 
 Make sure your Wi-Fi network is set to Private, not Public. On Linux with `ufw`: `sudo ufw allow 8765/tcp`.
+
+## WebSocket protocol
+
+Connect to `ws://<host>:<port>/?token=<token>`. A missing or wrong token gets HTTP 401.
+
+Server to app:
+- `{"type": "hello", "v": 1, "device_id": "..."}` once on connect
+- one `telemetry` message per second (below)
+- `{"type": "ack", "cmd": "pause", "ok": true, "paused": true}` after each command
+
+App to server:
+- `{"cmd": "pause"}` stops training and keeps it stopped until resumed
+- `{"cmd": "resume"}`
+- `{"cmd": "snapshot"}` returns a telemetry message right away
+- `{"cmd": "ping"}`
+
+### Telemetry schema (v1)
+
+Any sensor the machine does not expose is `null`. Units are in the field names.
+
+```json
+{
+  "type": "telemetry",
+  "v": 1,
+  "ts": 1763370000.12,
+  "device": {
+    "id": "a1b2c3d4e5f6",
+    "name": "Gaming PC",
+    "hostname": "gaming-pc",
+    "os": "Windows 11",
+    "platform": "win32",
+    "kind": "desktop"
+  },
+  "gpu": {
+    "available": true,
+    "vendor": "nvidia",
+    "name": "NVIDIA GeForce RTX 3060",
+    "driver": "555.42",
+    "util": 97,
+    "vram_used_gb": 3.1,
+    "vram_total_gb": 12.0,
+    "temp_c": 71,
+    "temp_limit_c": 93,
+    "temp_shutdown_c": 98,
+    "power_w": 151.5,
+    "power_limit_w": 170.0,
+    "fan_pct": 55,
+    "clock_mhz": 1890,
+    "clock_max_mhz": 2100,
+    "throttle_reasons": ["sw_power_cap"],
+    "throttled": true,
+    "processes": [{"pid": 4242, "kind": "compute", "mem_gb": 2.0}]
+  },
+  "cpu": {"name": "AMD Ryzen 5 5600X", "util": 35.0, "cores": 12, "freq_mhz": 4200, "temp_c": null},
+  "ram": {"used_gb": 11.2, "total_gb": 32.0},
+  "battery": {"present": false, "percent": null, "plugged": null},
+  "idle": {
+    "user_idle_s": 900.0,
+    "method": "GetLastInputInfo",
+    "idle": true,
+    "eligible": true,
+    "reasons": []
+  },
+  "blockers": [],
+  "state": "training",
+  "paused": false,
+  "uptime_s": 120,
+  "limits": {"max_temp_c": 83.0, "idle_minutes": 5.0, "min_battery_pct": 50.0},
+  "train": {
+    "status": "running",
+    "round": 2,
+    "total_rounds": 50,
+    "step": 40,
+    "steps_per_round": 100,
+    "loss": 1.71,
+    "accuracy": 0.38,
+    "samples": 19200,
+    "samples_per_s": 2400.0,
+    "device": "cuda:NVIDIA GeForce RTX 3060",
+    "dataset": "cifar10",
+    "history": [{"round": 1, "loss": 2.01, "accuracy": 0.27, "samples": 6400}],
+    "error": null
+  }
+}
+```
+
+Field notes:
+- `gpu.available` is `false` when no NVIDIA GPU or driver is found. `gpu.reason` then says why, and every other GPU field is absent.
+- `state` is one of `training`, `idle` or `busy`. `blockers` lists why the device is busy.
+- `throttle_reasons` values: `gpu_idle`, `app_clock_setting`, `sw_power_cap`, `hw_slowdown`, `sync_boost`, `sw_thermal`, `hw_thermal`, `hw_power_brake`, `display_clock`. `throttled` is true when any power or thermal reason is active.
+- `train` is `null` unless the agent runs with `--train`. `train.status` is one of `starting`, `loading`, `waiting`, `running`, `done`, `error` or `stopped`. `history` holds the last 50 rounds.
+
+How the app maps it to a device card: GPU `util`, `vram_*`, `temp_c`, `power_w`, `fan_pct` and `clock_mhz` fill the card directly. Without a GPU, the card shows CPU load and system RAM instead. `train.samples` becomes the device's share of work, and the training tab reads `train.history`.
