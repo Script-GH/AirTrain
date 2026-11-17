@@ -343,6 +343,91 @@ const _mockPeers = [
   ),
 ];
 
+// ---------- Agent telemetry -> models ----------
+double _n(Object? v, [double fallback = 0]) => v is num ? v.toDouble() : fallback;
+
+List<double> _push(List<double> l, double v) {
+  final out = [...l, v];
+  if (out.length > 40) out.removeAt(0);
+  return out;
+}
+
+/// Maps one `telemetry` message from `airtrain serve` (schema in agent/README.md) to a [Device].
+Device deviceFromTelemetry(Map<String, dynamic> t, String linkId, Device? prev) {
+  final dev = (t['device'] as Map?) ?? const {};
+  final g = (t['gpu'] as Map?) ?? const {};
+  final c = (t['cpu'] as Map?) ?? const {};
+  final r = (t['ram'] as Map?) ?? const {};
+  final train = t['train'] as Map?;
+  final limits = (t['limits'] as Map?) ?? const {};
+  final hasGpu = g['available'] == true;
+
+  final util = hasGpu ? _n(g['util']) : _n(c['util']);
+  final temp = hasGpu ? _n(g['temp_c']) : _n(c['temp_c']);
+  final ramTotal = max(_n(r['total_gb'], 1), 0.1);
+  final ram = _n(r['used_gb']);
+  final fan = g['fan_pct'];
+  final paused = t['paused'] == true;
+  final state = switch (t['state']) {
+    'training' => DeviceState.training,
+    'busy' => DeviceState.busy,
+    'offline' => DeviceState.offline,
+    _ => DeviceState.idle,
+  };
+
+  return Device(
+    id: 'agent:${dev['id'] ?? linkId}',
+    linkId: linkId,
+    name: '${dev['name'] ?? linkId}',
+    gpu: hasGpu ? '${g['name']} · CUDA' : '${c['name'] ?? 'CPU'} · CPU only',
+    icon: dev['kind'] == 'laptop' ? Icons.laptop_rounded : Icons.desktop_windows_rounded,
+    vramTotal: hasGpu ? max(_n(g['vram_total_gb'], 1), 0.1) : ramTotal,
+    vramUsed: hasGpu ? _n(g['vram_used_gb']) : ram,
+    state: state,
+    paused: paused,
+    util: util,
+    temp: temp,
+    tempLimit: _n(g['temp_limit_c'], _n(limits['max_temp_c'], 90)),
+    power: _n(g['power_w']),
+    powerLimit: max(_n(g['power_limit_w'], 1), 1),
+    ramTotal: ramTotal,
+    ram: ram,
+    cpu: _n(c['util']),
+    hasFan: fan is num,
+    fan: fan is num ? fan.round() : 0,
+    fanUnit: '%',
+    cpuOnly: !hasGpu,
+    clock: _n(g['clock_mhz'], _n(c['freq_mhz'])),
+    throttled: g['throttled'] == true,
+    samples: train == null ? 0 : _n(train['samples']).round(),
+    history: _push(prev?.history ?? const [], util),
+    tempHistory: _push(prev?.tempHistory ?? const [], temp),
+  );
+}
+
+/// Builds the training job view from the agent that has made the most progress.
+Job? jobFromTelemetry(Iterable<Map<String, dynamic>> snaps, DateTime startedAt) {
+  Map? best;
+  for (final s in snaps) {
+    final t = s['train'];
+    if (t is Map && (best == null || _n(t['round']) > _n(best['round']))) best = t;
+  }
+  if (best == null) return null;
+  final hist = [for (final h in (best['history'] as List? ?? const [])) h as Map];
+  return Job(
+    round: _n(best['round']).round(),
+    totalRounds: max(_n(best['total_rounds'], 1).round(), 1),
+    acc: [for (final h in hist) _n(h['accuracy'])],
+    loss: [for (final h in hist) _n(h['loss'])],
+    log: [
+      for (final h in hist.reversed)
+        RoundLog(_n(h['round']).round(), _n(h['accuracy']), _n(h['loss']), 1, _n(h['samples']).round()),
+    ],
+    startedAt: startedAt,
+    throughput: snaps.fold(0.0, (a, s) => a + _n((s['train'] as Map?)?['samples_per_s'])),
+  );
+}
+
 // ---------- Mock data source (replace with WebSocket later) ----------
 class SwarmNotifier extends Notifier<SwarmState> {
   final _rng = Random();
