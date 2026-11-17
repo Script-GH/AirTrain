@@ -1634,15 +1634,46 @@ class _SparkPainter extends CustomPainter {
 }
 
 // ---------- Network ----------
-/// One point on the map: either one of your devices or a peer.
+/// Devices shown on the Network tab: only those reported by a paired agent running the AirTrain CLI.
+List<Device> networkDevices(SwarmState s) => [
+  for (final d in s.devices)
+    if (d.linkId != null) d,
+];
+
+/// One agent device on the map and in the node list.
 class NetNode {
-  const NetNode(this.name, this.detail, this.city, this.lat, this.lon, this.state, this.latency, this.mine);
+  const NetNode({
+    required this.name,
+    required this.detail,
+    required this.state,
+    this.city,
+    this.lat,
+    this.lon,
+    this.jobName,
+    this.cluster,
+  });
+
+  factory NetNode.of(Device d) => NetNode(
+    name: d.name,
+    detail: d.gpu,
+    state: d.paused && d.state != DeviceState.offline ? DeviceState.idle : d.state,
+    city: d.city,
+    lat: d.lat,
+    lon: d.lon,
+    jobName: d.jobName,
+    cluster: d.cluster,
+  );
+
   final String name, detail;
-  final String? city;
+  final String? city, jobName;
   final double? lat, lon;
   final DeviceState state;
-  final int latency;
-  final bool mine;
+  final ClusterRef? cluster;
+
+  bool get onMap => lat != null && lon != null;
+
+  /// Arcs are drawn only to a cluster whose coordinator position is known.
+  bool get linked => cluster?.lat != null && cluster?.lon != null;
 }
 
 Color stateColor(DeviceState s) => switch (s) {
@@ -1651,6 +1682,11 @@ Color stateColor(DeviceState s) => switch (s) {
   DeviceState.busy => C.amber,
   DeviceState.offline => C.red,
 };
+
+String _distinct(Iterable<String?> values, String none) {
+  final set = values.nonNulls.toSet();
+  return set.isEmpty ? none : set.join(', ');
+}
 
 class NetworkScreen extends ConsumerStatefulWidget {
   const NetworkScreen({super.key});
@@ -1670,19 +1706,15 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
 
   @override
   Widget build(BuildContext context) {
-    final s = ref.watch(swarmProvider);
-    final nodes = [
-      for (final d in s.devices)
-        NetNode(d.name, d.gpu, d.city, d.lat, d.lon, d.paused ? DeviceState.idle : d.state, 8 + d.id.length, true),
-      for (final p in s.peers) NetNode(p.name, p.hw, p.city, p.lat, p.lon, p.state, p.latency, false),
-    ];
-    final live = nodes.where((n) => n.state != DeviceState.offline && n.latency > 0).toList();
-    final avgLatency = live.isEmpty ? 0 : live.fold<int>(0, (a, n) => a + n.latency) ~/ live.length;
-    final countries = nodes
-        .where((n) => n.state != DeviceState.offline)
-        .map((n) => n.city?.split(', ').last)
-        .nonNulls
-        .toSet();
+    final devices = networkDevices(ref.watch(swarmProvider));
+    final nodes = [for (final d in devices) NetNode.of(d)];
+    final online = nodes.where((n) => n.state != DeviceState.offline).toList();
+    final training = nodes.where((n) => n.state == DeviceState.training).length;
+    final latencies = [for (final n in online) ?n.cluster?.latencyMs];
+    final avgLatency = latencies.isEmpty ? null : latencies.reduce((a, b) => a + b) / latencies.length;
+    final countries = online.map((n) => n.city?.split(', ').last).nonNulls.toSet();
+    final clusters = {for (final n in nodes) ?n.cluster?.id};
+    final unmapped = nodes.where((n) => !n.onMap).length;
     final sorted = [...nodes]..sort((a, b) => a.state.index.compareTo(b.state.index));
 
     return Scaffold(
@@ -1695,41 +1727,57 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
               style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: C.text, letterSpacing: -0.5),
             ),
             const SizedBox(height: 2),
-            const Text('Every device syncs with one coordinator', style: TextStyle(color: C.muted, fontSize: 13)),
+            const Text('Devices running the AirTrain CLI', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 20),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: cardDeco,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
+              child: Column(
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${s.activeCount}',
-                        style: const TextStyle(
-                          color: C.text,
-                          fontSize: 44,
-                          height: 1,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -1,
-                          fontFeatures: tabular,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
-                    ],
-                  ),
-                  const Spacer(),
-                  Column(
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      _NetStat('Connected', '${s.connectedCount} / ${s.totalCount}'),
-                      _NetStat('Yours', '${s.devices.where((d) => d.active).length} / ${s.devices.length}'),
-                      _NetStat('Countries', '${countries.length}'),
-                      _NetStat('Avg latency', '$avgLatency ms'),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '$training',
+                            style: const TextStyle(
+                              color: C.text,
+                              fontSize: 44,
+                              height: 1,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -1,
+                              fontFeatures: tabular,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
+                        ],
+                      ),
+                      const Spacer(),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          _NetStat('Connected', '${online.length} / ${nodes.length}'),
+                          _NetStat('Clusters', '${clusters.length}'),
+                          _NetStat('Countries', '${countries.length}'),
+                          _NetStat('Latency', avgLatency == null ? '—' : '${avgLatency.round()} ms'),
+                        ],
+                      ),
                     ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Divider(height: 1, color: C.border),
+                  const SizedBox(height: 12),
+                  _InfoLine('Job', _distinct(nodes.map((n) => n.jobName), 'None picked')),
+                  const SizedBox(height: 6),
+                  _InfoLine(
+                    'Cluster',
+                    _distinct(
+                      nodes.map((n) => n.cluster == null ? null : '${n.cluster!.name} · ${n.cluster!.region ?? '?'}'),
+                      'Not connected',
+                    ),
                   ),
                 ],
               ),
@@ -1770,35 +1818,67 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
                     },
                   ),
                   const SizedBox(height: 12),
-                  const Wrap(
+                  Wrap(
                     spacing: 14,
                     runSpacing: 6,
                     children: [
-                      _Legend(C.accent, 'Coordinator'),
-                      _Legend(C.green, 'Training'),
-                      _Legend(C.muted, 'Idle'),
-                      _Legend(C.red, 'Offline'),
+                      if (nodes.any((n) => n.linked)) const _Legend(C.accent, 'Coordinator'),
+                      const _Legend(C.green, 'Training'),
+                      const _Legend(C.muted, 'Idle'),
+                      const _Legend(C.amber, 'Busy'),
+                      const _Legend(C.red, 'Offline'),
                     ],
                   ),
+                  if (unmapped > 0) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '$unmapped ${unmapped == 1 ? 'device has' : 'devices have'} no location. '
+                      'Set one with: airtrain config --set location="City, CC"',
+                      style: const TextStyle(color: C.muted, fontSize: 11),
+                    ),
+                  ],
                 ],
               ),
             ),
-            const SizedBox(height: 28),
-            const Text(
-              'NODES',
-              style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              decoration: cardDeco,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              child: Column(children: [for (final n in sorted) _NodeRow(n)]),
-            ),
+            if (nodes.isNotEmpty) ...[
+              const SizedBox(height: 28),
+              const Text(
+                'NODES',
+                style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                decoration: cardDeco,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                child: Column(children: [for (final n in sorted) _NodeRow(n)]),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
+}
+
+class _InfoLine extends StatelessWidget {
+  const _InfoLine(this.label, this.value);
+  final String label, value;
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      SizedBox(
+        width: 64,
+        child: Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
+      ),
+      Expanded(
+        child: Text(
+          value,
+          style: const TextStyle(color: C.text, fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+      ),
+    ],
+  );
 }
 
 class _NetStat extends StatelessWidget {
@@ -1887,6 +1967,8 @@ class _NodeRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = stateColor(n.state);
+    final offline = n.state == DeviceState.offline;
+    final latency = n.cluster?.latencyMs;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
@@ -1901,46 +1983,34 @@ class _NodeRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        n.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: C.text, fontSize: 14, fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                    if (n.mine) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: C.accent.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'You',
-                          style: TextStyle(color: C.accent, fontSize: 10, fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ],
-                  ],
+                Text(
+                  n.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: C.text, fontSize: 14, fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   '${n.detail} · ${n.city ?? 'Location unknown'}',
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: C.muted, fontSize: 12),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${n.jobName ?? 'No job picked'} · ${n.cluster?.name ?? 'No cluster'}',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: n.cluster == null ? C.muted : C.accent, fontSize: 12),
                 ),
               ],
             ),
           ),
+          const SizedBox(width: 8),
           Text(
-            n.state == DeviceState.offline ? 'offline' : '${n.latency} ms',
-            style: TextStyle(
-              color: n.state == DeviceState.offline ? C.red : C.muted,
-              fontSize: 12,
-              fontFeatures: tabular,
-            ),
+            offline
+                ? 'offline'
+                : latency == null
+                ? '—'
+                : '${latency.round()} ms',
+            style: TextStyle(color: offline ? C.red : C.muted, fontSize: 12, fontFeatures: tabular),
           ),
         ],
       ),
@@ -1979,8 +2049,12 @@ class _MapPainter extends CustomPainter {
       }
     }
 
-    final hub = _project(coordinator.lat, coordinator.lon, size);
     final dotR = max(2.6, size.width / 120);
+    // One coordinator pin per cluster that an agent reports being connected to.
+    final hubs = <String, (Offset, String)>{
+      for (final n in nodes)
+        if (n.linked) n.cluster!.id: (_project(n.cluster!.lat!, n.cluster!.lon!, size), n.cluster!.name),
+    };
 
     for (var k = 0; k < nodes.length; k++) {
       final n = nodes[k];
@@ -1988,11 +2062,12 @@ class _MapPainter extends CustomPainter {
       if (lat == null || lon == null) continue; // listed below the map, not drawn
       final p = _project(lat, lon, size);
       final color = stateColor(n.state);
-      final mid = (p + hub) / 2;
-      final d = hub - p;
-      final ctrl = mid + Offset(d.dy, -d.dx) * 0.25 - Offset(0, d.distance * 0.12);
+      final hub = n.linked ? hubs[n.cluster!.id]!.$1 : null;
 
-      if (n.state != DeviceState.offline) {
+      if (hub != null && n.state != DeviceState.offline && (hub - p).distance > 1) {
+        final mid = (p + hub) / 2;
+        final d = hub - p;
+        final ctrl = mid + Offset(d.dy, -d.dx) * 0.25 - Offset(0, d.distance * 0.12);
         final path = Path()
           ..moveTo(p.dx, p.dy)
           ..quadraticBezierTo(ctrl.dx, ctrl.dy, hub.dx, hub.dy);
@@ -2001,7 +2076,7 @@ class _MapPainter extends CustomPainter {
           Paint()
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.2
-            ..color = color.withValues(alpha: n.state == DeviceState.training ? 0.45 : 0.18),
+            ..color = color.withValues(alpha: n.state == DeviceState.training ? 0.55 : 0.22),
         );
         if (n.state == DeviceState.training) {
           // update packets: device -> coordinator, then averaged weights back
@@ -2016,9 +2091,21 @@ class _MapPainter extends CustomPainter {
     }
 
     final glow = 0.5 + 0.5 * sin(t * 2 * pi);
-    canvas.drawCircle(hub, dotR * (2.6 + glow), Paint()..color = C.accent.withValues(alpha: 0.18));
-    canvas.drawCircle(hub, dotR * 1.4, Paint()..color = C.accent);
-    canvas.drawCircle(hub, dotR * 0.6, Paint()..color = C.bg);
+    for (final (hub, name) in hubs.values) {
+      canvas.drawCircle(hub, dotR * (2.6 + glow), Paint()..color = C.accent.withValues(alpha: 0.18));
+      canvas.drawCircle(hub, dotR * 1.4, Paint()..color = C.accent);
+      canvas.drawCircle(hub, dotR * 0.6, Paint()..color = C.bg);
+      final label = TextPainter(
+        text: TextSpan(
+          text: name,
+          style: const TextStyle(color: C.accent, fontSize: 10, fontWeight: FontWeight.w600),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final x = (hub.dx - label.width / 2).clamp(2.0, max(2.0, size.width - label.width - 2)).toDouble();
+      final y = hub.dy - dotR * 3.2 - label.height;
+      label.paint(canvas, Offset(x, y < 2 ? hub.dy + dotR * 3.2 : y));
+    }
   }
 
   @override
