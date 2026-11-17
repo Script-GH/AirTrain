@@ -17,3 +17,6 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["airtrain_agent"]
+
+[project.scripts]
+airtrain = "airtrain_agent.cli:main"
