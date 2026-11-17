@@ -1,6 +1,6 @@
 # AirTrain
 
-Pool idle GPU and SoC compute across laptops and desktops to collaboratively train small models. This repo holds the mobile dashboard (Flutter) used to monitor devices and training jobs, and the device agent (`agent/`) that runs on each PC.
+Pool idle GPU and SoC compute across laptops and desktops to collaboratively train small models. This repo holds the mobile dashboard (Flutter) used to monitor devices and training jobs, a React UI preview (`web/`), and the device agent (`agent/`) that runs on each PC.
 
 ## Status
 - Phone dashboard: Overview, Training, Health and Network tabs. Overview and Health show demo data until a PC agent is paired, then live data. The Network tab and the device counts only ever include paired PCs running the CLI. Each one sits on the map at the location its agent reports, linked to its cluster's coordinator.
@@ -30,8 +30,17 @@ flutter run            # connected phone
 flutter run -d linux   # desktop preview
 ```
 
+## React UI preview
+A component-only React port of the dashboard lives in `web/`. It mirrors the Flutter screens on mock data and does not connect to agents. See [web/README.md](web/README.md).
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
 ## Planned architecture
 - PC agent (Python, `agent/`): GPU stats via pynvml, idle/battery/thermal checks, local training now, Flower client next
 - Coordinator (FastAPI): device registry, jobs, live stats over WebSocket
 - Aggregation (Flower SuperLink): FedAvg with partial rounds
-- Dashboard (this app): Flutter + Riverpod
+- Dashboard: Flutter + Riverpod, with a React UI preview in `web/`
