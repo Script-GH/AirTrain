@@ -84,9 +84,20 @@ class Device {
     this.city = 'Bengaluru, IN',
     this.lat = 12.97,
     this.lon = 77.59,
+    this.linkId,
+    this.fanUnit = 'rpm',
+    this.cpuOnly = false,
   });
 
   final String id, name, gpu, city;
+
+  /// Set for devices reported by a paired PC agent; null for demo devices.
+  final String? linkId;
+  final String fanUnit;
+
+  /// No supported GPU: util/VRAM fields carry CPU load and system RAM instead.
+  final bool cpuOnly;
+
   final double lat, lon;
   final IconData icon;
   final DeviceState state;
@@ -155,6 +166,9 @@ class Device {
     city: city,
     lat: lat,
     lon: lon,
+    linkId: linkId,
+    fanUnit: fanUnit,
+    cpuOnly: cpuOnly,
   );
 }
 
