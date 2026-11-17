@@ -1,4 +1,4 @@
-"""Hardware telemetry: NVIDIA GPU via NVML (optional), CPU and RAM via psutil."""
+"""Hardware telemetry: NVIDIA GPU via NVML (optional), CPU, RAM and battery via psutil."""
 
 from __future__ import annotations
 
@@ -215,17 +215,29 @@ class Sampler:
         vm = psutil.virtual_memory()
         return {"used_gb": _r((vm.total - vm.available) / GB, 2), "total_gb": _r(vm.total / GB, 2)}
 
+    def battery(self) -> dict[str, Any]:
+        try:
+            b = psutil.sensors_battery()
+        except Exception:
+            b = None
+        if b is None:
+            return {"present": False, "percent": None, "plugged": None}
+        return {"present": True, "percent": _r(b.percent, 0), "plugged": b.power_plugged}
+
     def sample(self) -> dict[str, Any]:
+        battery = self.battery()
         return {
             "ts": time.time(),
             "device": {
                 "hostname": self.hostname,
                 "os": self.os,
                 "platform": sys.platform,
+                "kind": "laptop" if battery["present"] else "desktop",
             },
             "gpu": self.gpu(),
             "cpu": self.cpu(),
             "ram": self.ram(),
+            "battery": battery,
         }
 
     def close(self) -> None:
