@@ -18,7 +18,7 @@ class Cluster:
     devices: int
     capacity: int
     avg_samples_per_s: float  # median per-device throughput in this cluster
-    probe_host: str | None = None  # host:port to time a TCP connect against
+    probe_host: str | None = None  # host:port of an HTTPS endpoint answering GET /ping
     simulated_latency_ms: float = 0.0  # used when the probe is not possible
 
     @property
@@ -131,3 +131,45 @@ class MockCoordinator(Coordinator):
 
     def leave(self, session: dict[str, Any]) -> None:
         return None
+
+
+def measure_latency(host_port: str, attempts: int = 3, timeout: float = 2.0) -> float | None:
+    """Round-trip time in ms to a region endpoint, or None if it cannot be reached.
+
+    Opens one HTTPS keep-alive connection, sends a warm-up GET /ping, then times further
+    requests on the same connection. That measures the network round trip without DNS, TCP
+    and TLS setup, and is not fooled by proxies that answer TCP connects locally.
+    """
+    import http.client
+
+    host, _, port = host_port.rpartition(":")
+    conn = http.client.HTTPSConnection(host, int(port or 443), timeout=timeout)
+    try:
+        conn.request("GET", "/ping")
+        conn.getresponse().read()
+        samples = []
+        for _ in range(attempts):
+            start = time.perf_counter()
+            conn.request("GET", "/ping")
+            conn.getresponse().read()
+            samples.append((time.perf_counter() - start) * 1000)
+        return round(min(samples), 1)
+    except (OSError, http.client.HTTPException):
+        return None
+    finally:
+        conn.close()
+
+
+def probe_latencies(clusters: list[Cluster], enabled: bool = True) -> dict[str, tuple[float, bool]]:
+    """Latency per cluster id as (ms, measured). Falls back to the simulated value per cluster."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    out = {c.id: (c.simulated_latency_ms, False) for c in clusters}
+    targets = [c for c in clusters if enabled and c.probe_host]
+    if not targets:
+        return out
+    with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+        for c, ms in zip(targets, pool.map(lambda c: measure_latency(c.probe_host), targets)):
+            if ms is not None:
+                out[c.id] = (ms, True)
+    return out
