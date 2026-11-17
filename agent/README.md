@@ -4,6 +4,48 @@ The device-side CLI for AirTrain. It runs on the PC or laptop that contributes c
 
 Supported: **Windows 10/11 and Linux**, Python 3.10+. GPU telemetry and CUDA training need an NVIDIA GPU. Machines without one still work, reporting CPU and RAM and training on the CPU. macOS is not supported yet.
 
+## Three steps
+
+```bash
+airtrain analysis          # 1. profile this machine and pick a training job
+airtrain connect           # 2. join the best cluster for that job
+airtrain start training    # 3. train while idle, with live progress and phone telemetry
+```
+
+Each step saves its result to the config, and each one checks that the step before it is done.
+
+**1. `airtrain analysis`** profiles the machine:
+- backend (CUDA or CPU) and GPU name
+- free VRAM and RAM, CPU cores and free disk
+- thermal and power headroom
+- measured compute, from a quick matmul benchmark when PyTorch is installed
+
+Then it checks every job in the catalog:
+
+| Job id | Model | Dataset |
+| --- | --- | --- |
+| `cifar10-cnn` | 3-conv CNN, 0.6M params | CIFAR-10 |
+| `char-gpt-tiny` | 4-layer char-level GPT, 3.2M params | Tiny Shakespeare |
+| `resnet18-ft` | ResNet-18, 11.2M params, 128 px | Imagenette |
+
+For each job it estimates training memory as weights + grads + Adam state (16 bytes per parameter) + activations x batch size (x1.25 safety) + runtime overhead. The recommended batch size is the largest that fits in 80% of free VRAM, or free RAM on CPU. It also estimates samples/s. Each job is marked *can run*, *slow* (would hold the cluster back) or *cannot run* (memory or disk). Pick one at the prompt, or pass `--job <id>`. Options: `--batch N` overrides the batch size; `--no-benchmark` skips the benchmark.
+
+**2. `airtrain connect`** asks the coordinator for clusters training the chosen job and ranks them by:
+- latency: 30%
+- throughput similarity to this device: 25%, so it does not join a cluster it would slow down (a straggler) or sit idle in
+- job match: 20%
+- region: 15%
+- free slots: 10%
+
+Latency is measured as an HTTPS round trip to each cluster's region endpoint. If that endpoint can't be reached, a simulated value is used, marked `*`. Full clusters are listed but cannot be joined. The command joins the top cluster and ends with `Connected to <cluster> (<n> devices, <region>, <latency> ms)`.
+
+The coordinator service doesn't exist yet, so clusters come from a local mock. `--coordinator URL` selects the HTTP client for the planned FastAPI coordinator (see `TODO(coordinator)` in `coordinator.py`). Other options: `--cluster ID`, `--region ap-south-1`, `--no-probe`. `airtrain disconnect` leaves the cluster.
+
+**3. `airtrain start training`** (bare `airtrain start` also works) runs the idle-aware trainer for the chosen job with the recommended batch size. It shows a live view of round, loss, accuracy, samples/s and GPU or CPU load and temperature. It also runs the phone app's WebSocket server in the background and prints the pairing URL and token at the start. Telemetry includes the job and cluster names.
+- Options: `--rounds`, `--steps`, `--dataset synthetic`, `--no-idle-check`, `--port`, `--token`, `--no-server`.
+- Datasets: `char-gpt-tiny` and `resnet18-ft` train on generated data until their real datasets are wired in (`TODO(datasets)` in `trainer.py`).
+- Rounds are local until the coordinator runs FedAvg across the cluster.
+
 ## Install
 
 The `[train]` extra pulls in PyTorch. Leave it out if you only want monitoring.
