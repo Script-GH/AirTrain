@@ -81,3 +81,24 @@ Training runs only while none of these blockers apply. The app shows them as "In
 The trainer checks these between batches, so it stops within a fraction of a second when you come back, and resumes once the machine has been idle for `idle_minutes` again.
 
 Training is currently a single-device stub: a small CNN on CIFAR-10, using CUDA if available and otherwise the CPU. Federated rounds through the coordinator and Flower come next (see `TODO(coordinator)` in `airtrain_agent/trainer.py`).
+
+## Pairing the phone app
+
+1. On the PC, run `airtrain serve --train`. It prints something like:
+   ```
+   LAN IP   192.168.1.20
+   Token    q3Zk1bY0tXo-
+   App URL  ws://192.168.1.20:8765/?token=q3Zk1bY0tXo-
+   ```
+2. In the app, open **Overview**, tap the link button at the top right, paste the App URL and tap **Connect**. You can also type `192.168.1.20:8765` with the token in the second field.
+3. The phone and the PC must be on the same Wi-Fi or LAN. The app remembers paired agents and shows demo data until at least one is paired.
+
+### Windows firewall
+
+Windows asks to allow Python on first `serve`. Allow it on **Private networks**. To add the rule yourself, run this in an Administrator PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName "AirTrain agent" -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow -Profile Private
+```
+
+Make sure your Wi-Fi network is set to Private, not Public. On Linux with `ufw`: `sudo ufw allow 8765/tcp`.
