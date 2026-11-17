@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 from . import __version__
-from .config import config_dir, load_config
+from .config import config_dir, load_config, new_token
 
 
 def lan_ip() -> str:
@@ -119,6 +119,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_token(args: argparse.Namespace) -> int:
+    cfg, _ = load_config()
+    if args.reset:
+        cfg.token = new_token()
+        cfg.save()
+        print("New token generated. Re-pair the app.")
+    print(cfg.token)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="airtrain", description="AirTrain device agent")
     p.add_argument("--version", action="version", version=f"airtrain {__version__}")
@@ -134,6 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--token", help="override the pairing token for this run")
     s.add_argument("--quiet", action="store_true", help="do not log connections")
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("token", help="show the pairing token")
+    s.add_argument("--reset", action="store_true", help="generate a new token")
+    s.set_defaults(func=cmd_token)
     return p
 
 
