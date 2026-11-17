@@ -1247,7 +1247,14 @@ class HomeScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
-                StatusPill(label: '$online online', color: C.green),
+                StatusPill(label: s.live ? '$online online' : 'Demo data', color: s.live ? C.green : C.amber),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  tooltip: 'Pair a PC agent',
+                  onPressed: () => showPairSheet(context),
+                  style: IconButton.styleFrom(backgroundColor: C.border, foregroundColor: C.text),
+                  icon: const Icon(Icons.add_link_rounded, size: 20),
+                ),
               ],
             ),
             const SizedBox(height: 20),
@@ -1928,4 +1935,168 @@ class _MapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_MapPainter old) => true;
+}
+
+// ---------- Pairing ----------
+void showPairSheet(BuildContext context) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: C.card,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (_) => const PairSheet(),
+  );
+}
+
+class PairSheet extends ConsumerStatefulWidget {
+  const PairSheet({super.key});
+  @override
+  ConsumerState<PairSheet> createState() => _PairSheetState();
+}
+
+class _PairSheetState extends ConsumerState<PairSheet> {
+  final _url = TextEditingController();
+  final _token = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _token.dispose();
+    super.dispose();
+  }
+
+  void _connect() {
+    try {
+      ref.read(swarmProvider.notifier).addAgent(_url.text, token: _token.text);
+      _url.clear();
+      _token.clear();
+      setState(() => _error = null);
+    } on FormatException catch (e) {
+      setState(() => _error = e.message);
+    }
+  }
+
+  InputDecoration _deco(String label, String hint) => InputDecoration(
+    labelText: label,
+    hintText: hint,
+    labelStyle: const TextStyle(color: C.muted),
+    hintStyle: const TextStyle(color: C.muted, fontSize: 13),
+    filled: true,
+    fillColor: C.bg,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: C.border),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: C.border),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final agents = ref.watch(swarmProvider.select((s) => s.agents));
+    return Padding(
+      padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Pair a PC agent',
+            style: TextStyle(color: C.text, fontSize: 20, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Run `airtrain serve` on the PC and paste the App URL it prints. Phone and PC must be on the same network.',
+            style: TextStyle(color: C.muted, fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _url,
+            style: const TextStyle(color: C.text),
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: _deco('Agent URL', 'ws://192.168.1.20:8765/?token=...'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _token,
+            style: const TextStyle(color: C.text),
+            autocorrect: false,
+            decoration: _deco('Token (if not in the URL)', 'printed by airtrain serve'),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: C.red, fontSize: 13)),
+          ],
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: _connect,
+              style: FilledButton.styleFrom(
+                backgroundColor: C.accent,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Connect', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+          ),
+          if (agents.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            const Text(
+              'PAIRED AGENTS',
+              style: TextStyle(color: C.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
+            ),
+            const SizedBox(height: 6),
+            for (final a in agents) _AgentRow(agent: a),
+          ] else ...[
+            const SizedBox(height: 12),
+            const Text(
+              'No agents paired. The app shows demo data until you add one.',
+              style: TextStyle(color: C.muted, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AgentRow extends ConsumerWidget {
+  const _AgentRow({required this.agent});
+  final AgentInfo agent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final (label, color) = switch (agent.status) {
+      LinkStatus.connected => ('Connected', C.green),
+      LinkStatus.connecting => ('Connecting', C.amber),
+      LinkStatus.unauthorized => ('Wrong token', C.red),
+      LinkStatus.error => ('Unreachable', C.red),
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          const Icon(Icons.computer_rounded, color: C.muted, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              agent.url,
+              style: const TextStyle(color: C.text, fontFeatures: tabular),
+            ),
+          ),
+          StatusPill(label: label, color: color),
+          IconButton(
+            tooltip: 'Remove',
+            onPressed: () => ref.read(swarmProvider.notifier).removeAgent(agent.id),
+            icon: const Icon(Icons.close_rounded, color: C.muted, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
 }
