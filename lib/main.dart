@@ -58,6 +58,17 @@ class AirTrainApp extends StatelessWidget {
 // ---------- Models ----------
 enum DeviceState { training, idle, busy, offline }
 
+/// The training cluster an agent has joined with `airtrain connect`.
+class ClusterRef {
+  const ClusterRef({required this.id, required this.name, this.region, this.lat, this.lon, this.latencyMs});
+  final String id, name;
+  final String? region;
+
+  /// Where the cluster's coordinator runs (its region); null when unknown.
+  final double? lat, lon;
+  final double? latencyMs;
+}
+
 class Device {
   const Device({
     required this.id,
@@ -89,6 +100,8 @@ class Device {
     this.linkId,
     this.fanUnit = 'rpm',
     this.cpuOnly = false,
+    this.jobName,
+    this.cluster,
   });
 
   final String id, name, gpu;
@@ -102,6 +115,10 @@ class Device {
 
   /// No supported GPU: util/VRAM fields carry CPU load and system RAM instead.
   final bool cpuOnly;
+
+  /// Job picked with `airtrain analysis` and the cluster joined with `airtrain connect`, if any.
+  final String? jobName;
+  final ClusterRef? cluster;
 
   /// Map position; both null when the location (or its coordinates) is unknown.
   final double? lat, lon;
@@ -182,6 +199,8 @@ class Device {
     linkId: linkId,
     fanUnit: fanUnit,
     cpuOnly: cpuOnly,
+    jobName: jobName,
+    cluster: cluster,
   );
 }
 
@@ -390,6 +409,23 @@ List<double> _push(List<double> l, double v) {
   return (city: parts.isEmpty ? null : parts.join(', '), lat: hasPos ? lat : null, lon: hasPos ? lon : null);
 }
 
+/// Reads the agent's `cluster` block; null until the device has joined one.
+ClusterRef? clusterFromTelemetry(Map<String, dynamic> t) {
+  final c = t['cluster'];
+  if (c is! Map || c['id'] == null) return null;
+  double? num_(Object? v) => v is num && v.isFinite ? v.toDouble() : null;
+  final lat = num_(c['lat']), lon = num_(c['lon']);
+  final hasPos = lat != null && lon != null && lat.abs() <= 90 && lon.abs() <= 180;
+  return ClusterRef(
+    id: '${c['id']}',
+    name: '${c['name'] ?? c['id']}',
+    region: c['region'] is String ? c['region'] as String : null,
+    lat: hasPos ? lat : null,
+    lon: hasPos ? lon : null,
+    latencyMs: num_(c['latency_ms']),
+  );
+}
+
 /// Maps one `telemetry` message from `airtrain serve` (schema in agent/README.md) to a [Device].
 Device deviceFromTelemetry(Map<String, dynamic> t, String linkId, Device? prev) {
   final dev = (t['device'] as Map?) ?? const {};
@@ -444,6 +480,8 @@ Device deviceFromTelemetry(Map<String, dynamic> t, String linkId, Device? prev) 
     city: loc.city,
     lat: loc.lat,
     lon: loc.lon,
+    jobName: (t['job'] as Map?)?['name'] as String?,
+    cluster: clusterFromTelemetry(t),
   );
 }
 
