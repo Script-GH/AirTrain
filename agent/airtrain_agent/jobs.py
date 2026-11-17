@@ -123,3 +123,70 @@ def recommend_batch(job: Job, free_bytes: float, backend: str = "cuda") -> int |
         if estimate_memory(job, b, backend).total <= free_bytes * MEMORY_BUDGET:
             best = b
     return best
+
+
+# ---------------- throughput ----------------
+
+# Peak fp32 TFLOPS for common NVIDIA GPUs (matched by substring, longest first).
+GPU_TFLOPS = {
+    "4090": 82.6, "4080": 48.7, "4070 ti": 40.1, "4070": 29.1, "4060 ti": 22.1, "4060": 15.1, "4050": 9.0,
+    "3090": 35.6, "3080 ti": 34.1, "3080": 29.8, "3070 ti": 21.7, "3070": 20.3, "3060 ti": 16.2, "3060": 12.7,
+    "3050": 9.1, "2080 ti": 13.4, "2080": 10.1, "2070": 7.5, "2060": 6.5, "1660": 5.0, "1650": 3.0,
+    "1080": 8.9, "1070": 6.5, "a100": 19.5, "h100": 51.0, "a6000": 38.7, "a5000": 27.8, "a4000": 19.2,
+    "l4": 30.3, "t4": 8.1, "v100": 15.7,
+}
+DEFAULT_GPU_TFLOPS = 8.0
+CPU_FLOPS_PER_CYCLE = 32  # AVX2: 2 FMA units x 8 fp32 lanes x 2 ops
+# Share of peak a small model actually reaches in training (kernel launch, memory bound layers, data loading).
+EFFICIENCY = {"cuda": 0.30, "cpu": 0.40}
+# Share of a measured matmul rate a full training step reaches.
+BENCH_EFFICIENCY = 0.35
+
+
+def gpu_peak_flops(name: str | None) -> float:
+    n = (name or "").lower()
+    for key in sorted(GPU_TFLOPS, key=len, reverse=True):
+        if key in n:
+            return GPU_TFLOPS[key] * 1e12
+    return DEFAULT_GPU_TFLOPS * 1e12
+
+
+def cpu_peak_flops(physical_cores: int, freq_mhz: float | None) -> float:
+    ghz = (freq_mhz or 2500) / 1000
+    return max(physical_cores, 1) * ghz * 1e9 * CPU_FLOPS_PER_CYCLE
+
+
+def effective_flops(profile: dict) -> float:
+    """Sustained training FLOP/s for this machine, from a benchmark if one ran, else from specs."""
+    if profile.get("bench_flops"):
+        return profile["bench_flops"] * BENCH_EFFICIENCY
+    if profile["backend"] == "cuda":
+        return gpu_peak_flops(profile.get("gpu_name")) * EFFICIENCY["cuda"]
+    return cpu_peak_flops(profile.get("cpu_physical_cores", 1), profile.get("cpu_freq_mhz")) * EFFICIENCY["cpu"]
+
+
+def estimate_samples_per_s(job: Job, profile: dict) -> float:
+    return effective_flops(profile) / job.train_flops_per_sample
+
+
+def benchmark_flops(seconds: float = 0.6) -> tuple[float | None, str | None]:
+    """Measure fp32 matmul FLOP/s with torch on the training device. Returns (flops, device) or (None, None)."""
+    try:
+        import torch
+    except ImportError:
+        return None, None
+    import time
+
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    n = 2048 if dev == "cuda" else 512
+    a = torch.randn(n, n, device=dev)
+    b = torch.randn(n, n, device=dev)
+    (a @ b).sum().item()  # warm up
+    iters, start = 0, time.perf_counter()
+    while time.perf_counter() - start < seconds:
+        a @ b
+        iters += 1
+    if dev == "cuda":
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+    return 2 * n**3 * iters / elapsed, dev
