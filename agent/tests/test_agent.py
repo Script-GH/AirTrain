@@ -8,7 +8,8 @@ import unittest
 from types import SimpleNamespace as NS
 from unittest import mock
 
-from airtrain_agent import telemetry
+from airtrain_agent import idle, telemetry
+from airtrain_agent.config import Config
 
 
 def fake_pynvml(fail_fan: bool = True) -> types.ModuleType:
@@ -73,6 +74,54 @@ class GpuProbe(unittest.TestCase):
         self.assertFalse(snap["gpu"]["available"])
         self.assertIn("NVML", snap["gpu"]["reason"])
         self.assertGreater(snap["ram"]["total_gb"], 0)
+
+
+def snap(util=0.0, temp=50, procs=(), battery=None):
+    return {
+        "gpu": {"available": True, "util": util, "temp_c": temp, "processes": list(procs)},
+        "cpu": {"temp_c": None},
+        "battery": battery or {"present": False, "percent": None, "plugged": None},
+    }
+
+
+class IdleRules(unittest.TestCase):
+    cfg = Config(idle_minutes=5, max_temp_c=83, min_battery_pct=50, gpu_busy_util=30)
+
+    def run_eval(self, idle_s, t, training=False, hot=False):
+        with mock.patch.object(idle, "user_idle_seconds", return_value=(idle_s, "test")):
+            return idle.evaluate(self.cfg, t, {1}, training, hot)
+
+    def test_idle_and_cool_is_eligible(self):
+        self.assertTrue(self.run_eval(600, snap())["eligible"])
+
+    def test_user_active(self):
+        r = self.run_eval(3, snap())
+        self.assertFalse(r["eligible"])
+        self.assertIn("user active", r["reasons"])
+
+    def test_unknown_idle_falls_back_to_gpu(self):
+        self.assertTrue(self.run_eval(None, snap())["eligible"])
+        self.assertIn("GPU in use", self.run_eval(None, snap(util=80))["reasons"])
+
+    def test_other_gpu_process(self):
+        procs = [{"pid": 99, "kind": "compute"}]
+        r = self.run_eval(600, snap(util=90, procs=procs), training=True)
+        self.assertIn("another process is using the GPU", r["reasons"])
+        # our own process at high util while training is fine
+        own = [{"pid": 1, "kind": "compute"}]
+        self.assertTrue(self.run_eval(600, snap(util=90, procs=own), training=True)["eligible"])
+
+    def test_battery(self):
+        low = {"present": True, "percent": 30, "plugged": False}
+        self.assertFalse(self.run_eval(600, snap(battery=low))["eligible"])
+        charging = {"present": True, "percent": 30, "plugged": True}
+        self.assertTrue(self.run_eval(600, snap(battery=charging))["eligible"])
+
+    def test_temperature_hysteresis(self):
+        r = self.run_eval(600, snap(temp=84))
+        self.assertTrue(r["too_hot"])
+        self.assertTrue(self.run_eval(600, snap(temp=80), hot=True)["too_hot"])  # still latched
+        self.assertFalse(self.run_eval(600, snap(temp=77), hot=True)["too_hot"])
 
 
 if __name__ == "__main__":
