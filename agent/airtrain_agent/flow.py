@@ -268,7 +268,7 @@ def require_session(cfg: Config) -> bool:
 
 START_DEFAULTS = {
     "rounds": 50, "steps": 100, "dataset": "cifar10", "no_idle_check": False,
-    "host": "0.0.0.0", "port": 0, "token": None, "no_server": False,
+    "host": "0.0.0.0", "port": 0, "token": None, "no_server": False, "no_geo": False,
 }
 
 
@@ -300,6 +300,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             steps_per_round=_opt_arg(args, "steps"),
             job=job.id,
             batch_size=cfg.batch_size or job.batch_sizes[0],
+            geo=not _opt_arg(args, "no_geo"),
         )
     except TrainUnavailable as e:
         print(f"error: {e}", file=sys.stderr)
@@ -395,6 +396,8 @@ def add_parsers(sub: Any) -> None:
         sp.add_argument("--token", default=d("token"), help="override the pairing token for this run")
         sp.add_argument("--no-server", action="store_true", default=d("no_server"),
                         help="do not start the telemetry server for the phone app")
+        sp.add_argument("--no-geo", action="store_true", default=d("no_geo"),
+                        help="do not look up this device's location from its IP")
 
     s = sub.add_parser("start", help="step 3: start training for the joined cluster (`airtrain start training`)")
     start_opts(s, suppress=False)

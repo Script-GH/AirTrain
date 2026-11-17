@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import Any, Awaitable, Callable
 
@@ -24,6 +25,7 @@ class Controller:
         steps_per_round: int = 100,
         job: str = "cifar10-cnn",
         batch_size: int = 64,
+        geo: bool = True,
     ) -> None:
         self.cfg = cfg
         self.sampler = Sampler(cfg.gpu_index)
@@ -31,6 +33,10 @@ class Controller:
         self.require_idle = require_idle
         self._too_hot = False
         self.started = time.time()
+        # Location is resolved in the background so a slow or blocked lookup never delays startup.
+        self.location: dict[str, Any] | None = None
+        self._geo = threading.Thread(target=self._resolve_location, args=(geo,), name="airtrain-geo", daemon=True)
+        self._geo.start()
         self.trainer = None
         if train:
             from .trainer import Trainer, check_available
@@ -44,6 +50,15 @@ class Controller:
                 job=job,
                 batch_size=batch_size,
             )
+
+    def _resolve_location(self, allow_lookup: bool) -> None:
+        from .geo import resolve_location
+
+        self.location = resolve_location(self.cfg, allow_lookup=allow_lookup)
+
+    def wait_for_location(self, timeout: float = 5.0) -> dict[str, Any] | None:
+        self._geo.join(timeout)
+        return self.location
 
     def start(self) -> None:
         if self.trainer:
@@ -97,6 +112,7 @@ class Controller:
             "state": state,
             "paused": self.paused,
             "uptime_s": round(time.time() - self.started),
+            "location": self.location,
             "limits": {
                 "max_temp_c": self.cfg.max_temp_c,
                 "idle_minutes": self.cfg.idle_minutes,

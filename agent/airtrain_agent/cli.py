@@ -84,9 +84,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     from .controller import Controller
 
     cfg, _ = load_config()
-    ctrl = Controller(cfg)
+    ctrl = Controller(cfg, geo=not args.no_geo)
     try:
         time.sleep(0.5)  # let the CPU counter collect a sample
+        ctrl.wait_for_location()
         snap = ctrl.snapshot()
     finally:
         ctrl.stop()
@@ -111,6 +112,7 @@ def _make_controller(args: argparse.Namespace, train: bool) -> Any:
             dataset=getattr(args, "dataset", "cifar10"),
             require_idle=not getattr(args, "no_idle_check", False),
             steps_per_round=getattr(args, "steps", 100),
+            geo=not getattr(args, "no_geo", False),
         )
     except TrainUnavailable as e:
         print(f"error: {e}", file=sys.stderr)
@@ -227,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("status", help="print a one-shot hardware and idle snapshot")
     s.add_argument("--json", action="store_true", help="print the raw telemetry JSON")
+    s.add_argument("--no-geo", action="store_true", help="skip the IP geolocation lookup")
     s.set_defaults(func=cmd_status)
 
     def train_opts(sp: argparse.ArgumentParser) -> None:
@@ -243,6 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--token", help="override the pairing token for this run")
     s.add_argument("--train", action="store_true", help="also train when the machine is idle")
     s.add_argument("--quiet", action="store_true", help="do not log connections")
+    s.add_argument("--no-geo", action="store_true", help="do not look up this device's location from its IP")
     train_opts(s)
     s.set_defaults(func=cmd_serve)
 
