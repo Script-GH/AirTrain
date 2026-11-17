@@ -40,6 +40,12 @@ class Config:
     min_battery_pct: float = 50.0  # on battery below this, the device is busy
     gpu_busy_util: float = 30.0  # another process using the GPU above this % makes it busy
     region: str = ""  # e.g. ap-south-1; guessed from the time zone when empty
+    # Where this device is, shown on the app's network map.
+    location: str = ""  # override, e.g. "Bengaluru, IN" (or "12.97,77.59")
+    lat: float | None = None  # exact override, together with lon
+    lon: float | None = None
+    geo_lookup: bool = True  # allow a one-time IP geolocation lookup when no override is set
+    geo_cache: dict = field(default_factory=dict)  # result of that lookup
     # Step 1, `airtrain analysis`: the chosen job, its batch size and the machine profile it was based on.
     job: str = ""
     batch_size: int = 0
@@ -62,10 +68,15 @@ class Config:
 
     def set(self, key: str, value: str) -> None:
         types = {f.name: f.type for f in fields(self)}
-        if key not in types or key in ("device_id", "job", "batch_size", "profile", "session"):
-            raise KeyError(key)  # managed by `analysis` and `connect`
+        if key not in types or key in ("device_id", "job", "batch_size", "profile", "session", "geo_cache"):
+            raise KeyError(key)  # managed by `analysis`, `connect` and the location lookup
         current = getattr(self, key)
-        if isinstance(current, bool):
+        if key in ("lat", "lon"):
+            v = float(value) if value.strip() else None
+            if v is not None and not (-90 <= v <= 90 if key == "lat" else -180 <= v <= 180):
+                raise ValueError(f"{key} out of range")
+            setattr(self, key, v)
+        elif isinstance(current, bool):
             setattr(self, key, value.lower() in ("1", "true", "yes", "on"))
         elif isinstance(current, int):
             setattr(self, key, int(value))
