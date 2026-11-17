@@ -1569,7 +1569,8 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
 
   @override
   Widget build(BuildContext context) {
-    final devices = networkDevices(ref.watch(swarmProvider));
+    final swarm = ref.watch(swarmProvider);
+    final devices = networkDevices(swarm);
     final nodes = [for (final d in devices) NetNode.of(d)];
     final online = nodes.where((n) => n.state != DeviceState.offline).toList();
     final training = nodes.where((n) => n.state == DeviceState.training).length;
@@ -1592,59 +1593,62 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
             const SizedBox(height: 2),
             const Text('Devices running the AirTrain CLI', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 20),
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: cardDeco,
-              child: Column(
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '$training',
-                            style: const TextStyle(
-                              color: C.text,
-                              fontSize: 44,
-                              height: 1,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -1,
-                              fontFeatures: tabular,
+            if (nodes.isEmpty)
+              _NetworkEmpty(waiting: swarm.agents.isNotEmpty)
+            else
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: cardDeco,
+                child: Column(
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '$training',
+                              style: const TextStyle(
+                                color: C.text,
+                                fontSize: 44,
+                                height: 1,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -1,
+                                fontFeatures: tabular,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 6),
-                          const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
-                        ],
-                      ),
-                      const Spacer(),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          _NetStat('Connected', '${online.length} / ${nodes.length}'),
-                          _NetStat('Clusters', '${clusters.length}'),
-                          _NetStat('Countries', '${countries.length}'),
-                          _NetStat('Latency', avgLatency == null ? '—' : '${avgLatency.round()} ms'),
-                        ],
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  const Divider(height: 1, color: C.border),
-                  const SizedBox(height: 12),
-                  _InfoLine('Job', _distinct(nodes.map((n) => n.jobName), 'None picked')),
-                  const SizedBox(height: 6),
-                  _InfoLine(
-                    'Cluster',
-                    _distinct(
-                      nodes.map((n) => n.cluster == null ? null : '${n.cluster!.name} · ${n.cluster!.region ?? '?'}'),
-                      'Not connected',
+                            const SizedBox(height: 6),
+                            const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
+                          ],
+                        ),
+                        const Spacer(),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            _NetStat('Connected', '${online.length} / ${nodes.length}'),
+                            _NetStat('Clusters', '${clusters.length}'),
+                            _NetStat('Countries', '${countries.length}'),
+                            _NetStat('Latency', avgLatency == null ? '—' : '${avgLatency.round()} ms'),
+                          ],
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    const Divider(height: 1, color: C.border),
+                    const SizedBox(height: 12),
+                    _InfoLine('Job', _distinct(nodes.map((n) => n.jobName), 'None picked')),
+                    const SizedBox(height: 6),
+                    _InfoLine(
+                      'Cluster',
+                      _distinct(
+                        nodes.map((n) => n.cluster == null ? null : '${n.cluster!.name} · ${n.cluster!.region ?? '?'}'),
+                        'Not connected',
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(16),
@@ -1721,6 +1725,83 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
       ),
     );
   }
+}
+
+/// Shown instead of the stats when no paired agent has reported yet.
+class _NetworkEmpty extends StatelessWidget {
+  const _NetworkEmpty({required this.waiting});
+  final bool waiting;
+
+  static const _steps = ['airtrain analysis', 'airtrain connect', 'airtrain start training'];
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(20),
+    decoration: cardDeco,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          waiting ? 'Waiting for your agents' : 'No devices yet',
+          style: const TextStyle(color: C.text, fontSize: 17, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          waiting
+              ? 'Paired agents appear here once they report in. Make sure each one is running:'
+              : 'Only PCs running the AirTrain CLI show up here. Install it on a Windows or Linux PC and run:',
+          style: const TextStyle(color: C.muted, fontSize: 13, height: 1.4),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: C.bg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: C.border),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (var i = 0; i < _steps.length; i++)
+                Padding(
+                  padding: EdgeInsets.only(top: i == 0 ? 0 : 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${i + 1}',
+                        style: const TextStyle(color: C.muted, fontSize: 12, fontFeatures: tabular),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _steps[i],
+                        style: const TextStyle(color: C.text, fontSize: 13, fontFamily: 'monospace'),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: () => showPairSheet(context),
+            style: FilledButton.styleFrom(
+              backgroundColor: C.accent,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            icon: const Icon(Icons.add_link_rounded, size: 18),
+            label: const Text('Pair device', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _InfoLine extends StatelessWidget {
