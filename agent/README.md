@@ -236,3 +236,19 @@ Register-ScheduledTask -TaskName "AirTrain agent" -Action $action -Trigger $trig
 ```
 
 To remove it: `Unregister-ScheduledTask -TaskName "AirTrain agent"`.
+
+## Development checks
+
+```bash
+pip install -e ./agent
+python -m unittest discover -s agent/tests -v                    # no GPU needed; NVML is faked
+python agent/tests/smoke_ws.py                                   # serve + client + pause/resume
+python agent/tests/smoke_ws.py --train --dataset synthetic       # with the trainer (needs [train])
+```
+
+## Limitations
+
+- GPU telemetry and CUDA training cover NVIDIA only. AMD and Intel GPUs fall back to CPU and RAM reporting and CPU training.
+- macOS is not supported yet.
+- Training runs locally on each machine. Federated averaging through the coordinator is the next step.
+- Traffic is plain `ws://` on the LAN, protected by the pairing token. Do not expose the port to the internet.
