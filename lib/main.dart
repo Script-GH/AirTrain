@@ -528,12 +528,12 @@ class HealthCard extends ConsumerWidget {
                   tween: Tween(end: d.stress),
                   duration: const Duration(milliseconds: 600),
                   builder: (_, v, _) => CustomPaint(
-                    painter: _GaugePainter(v / 100, stressLevel(v).$2),
+                    painter: _GaugePainter(v / 100, color),
                     child: Padding(
                       padding: const EdgeInsets.only(top: 34),
                       child: Column(
                         children: [
-                          Text(v.toStringAsFixed(0),
+                          Text(d.stress.toStringAsFixed(0),
                               style: const TextStyle(
                                   color: C.text, fontSize: 28, fontWeight: FontWeight.w700, fontFeatures: tabular)),
                           const Text('stress', style: TextStyle(color: C.muted, fontSize: 11)),
