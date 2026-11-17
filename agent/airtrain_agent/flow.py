@@ -276,19 +276,6 @@ def _opt_arg(args: argparse.Namespace, name: str) -> Any:
     return getattr(args, name, START_DEFAULTS[name])
 
 
-def print_progress_line(snap: dict[str, Any], apps: int) -> str:
-    p = snap["train"] or {}
-    acc = p.get("accuracy")
-    line = (
-        f"[{p.get('status', '?'):>8}] round {p.get('round', 0)}/{p.get('total_rounds', 0)}"
-        f"  loss {_opt(p.get('loss'), '{:.3f}')}  acc {_opt(acc and acc * 100, '{:.1f}%')}"
-        f"  {p.get('samples_per_s', 0):,.0f} samples/s"
-    )
-    if snap["blockers"]:
-        line += f"  waiting: {', '.join(snap['blockers'])}"
-    return line
-
-
 def cmd_start(args: argparse.Namespace) -> int:
     import asyncio
     import socket
@@ -296,6 +283,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     from .cli import _qr, lan_ip
     from .controller import Controller
     from .jobs import get_job
+    from .progress import ProgressView
     from .trainer import TrainUnavailable
 
     cfg, _ = load_config()
@@ -333,12 +321,11 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     finished = asyncio.Event()
     last: dict[str, Any] = {}
+    view = ProgressView()
+    print()
 
     def on_snapshot(snap: dict[str, Any], apps: int) -> None:
-        line = print_progress_line(snap, apps)
-        if line != last.get("line"):
-            print(line, flush=True)
-            last["line"] = line
+        view.update(snap, apps)
         if (snap["train"] or {}).get("status") in ("done", "error", "stopped"):
             last["final"] = snap["train"]
             finished.set()
