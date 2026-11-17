@@ -18,5 +18,8 @@ dependencies = [
 [tool.setuptools]
 packages = ["airtrain_agent"]
 
+[project.optional-dependencies]
+train = ["torch>=2.1", "torchvision>=0.16"]
+
 [project.scripts]
 airtrain = "airtrain_agent.cli:main"
