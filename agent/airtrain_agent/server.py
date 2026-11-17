@@ -6,7 +6,7 @@ import asyncio
 import hmac
 import json
 from http import HTTPStatus
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from websockets.asyncio.server import ServerConnection, broadcast, serve
@@ -19,7 +19,15 @@ def _token_ok(path: str, token: str) -> bool:
     return hmac.compare_digest(got.encode(), token.encode())
 
 
-async def run_server(ctrl: Controller, host: str, port: int, token: str, quiet: bool = False) -> None:
+async def run_server(
+    ctrl: Controller,
+    host: str,
+    port: int,
+    token: str,
+    quiet: bool = False,
+    on_snapshot: Callable[[dict[str, Any], int], None] | None = None,
+) -> None:
+    """Serve telemetry until cancelled. `on_snapshot(snapshot, connected_apps)` runs after every push."""
     clients: set[ServerConnection] = set()
     latest: dict[str, Any] = {}
 
@@ -67,6 +75,8 @@ async def run_server(ctrl: Controller, host: str, port: int, token: str, quiet: 
         latest.update(snap)
         if clients:
             broadcast(clients, json.dumps(snap))
+        if on_snapshot:
+            on_snapshot(snap, len(clients))
 
     async with serve(handler, host, port, process_request=process_request, ping_interval=20):
         await ctrl.run(push)
