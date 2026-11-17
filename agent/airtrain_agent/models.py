@@ -5,6 +5,33 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+VOCAB = 96  # printable ASCII
+CONTEXT = 128
+
+
+def _tiny_gpt(torch: Any) -> Any:
+    nn = torch.nn
+
+    class TinyGPT(nn.Module):
+        """Decoder-only transformer: 4 layers, d=256, 4 heads, context 128, character vocabulary."""
+
+        def __init__(self, layers: int = 4, d: int = 256, heads: int = 4) -> None:
+            super().__init__()
+            self.tok = nn.Embedding(VOCAB, d)
+            self.pos = nn.Embedding(CONTEXT, d)
+            block = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.1, batch_first=True, norm_first=True)
+            self.blocks = nn.TransformerEncoder(block, layers, enable_nested_tensor=False)
+            self.norm = nn.LayerNorm(d)
+            self.head = nn.Linear(d, VOCAB)
+
+        def forward(self, x: Any) -> Any:
+            t = x.shape[1]
+            h = self.tok(x) + self.pos(torch.arange(t, device=x.device))
+            mask = nn.Transformer.generate_square_subsequent_mask(t, device=x.device)
+            return self.head(self.norm(self.blocks(h, mask=mask, is_causal=True)))
+
+    return TinyGPT()
+
 
 def build_model(job_id: str, torch: Any) -> Any:
     nn = torch.nn
@@ -15,6 +42,8 @@ def build_model(job_id: str, torch: Any) -> Any:
             nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
             nn.Flatten(), nn.Linear(128 * 4 * 4, 256), nn.ReLU(), nn.Linear(256, 10),
         )
+    if job_id == "char-gpt-tiny":
+        return _tiny_gpt(torch)
     raise KeyError(f"no model for job '{job_id}'")
 
 
@@ -43,4 +72,17 @@ def synthetic_data(job_id: str, torch: Any) -> tuple[Any, Any]:
         x += y.view(-1, 1, 1, 1).float() * 0.1
         ds = torch.utils.data.TensorDataset(x, y)
         return tuple(torch.utils.data.random_split(ds, [3584, 512], generator=g))
+    if job_id == "char-gpt-tiny":
+        # A text made of a small set of repeating "words", so next-character prediction is learnable.
+        import random
+
+        rng = random.Random(0)
+        letters = [chr(c) for c in range(97, 123)]
+        words = ["".join(rng.choices(letters, k=rng.randint(3, 7))) for _ in range(60)]
+        text = " ".join(rng.choices(words, k=40_000))
+        ids = torch.tensor([ord(ch) - 32 for ch in text], dtype=torch.long)
+        starts = torch.randint(0, len(ids) - CONTEXT - 1, (4608,), generator=g)
+        windows = torch.stack([ids[s : s + CONTEXT + 1] for s in starts.tolist()])
+        ds = torch.utils.data.TensorDataset(windows[:, :-1], windows[:, 1:])
+        return tuple(torch.utils.data.random_split(ds, [4096, 512], generator=g))
     raise KeyError(f"no synthetic data for job '{job_id}'")
