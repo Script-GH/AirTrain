@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airtrain-agent"
+version = "0.1.0"
+description = "AirTrain device agent: streams GPU/CPU telemetry to the AirTrain phone app and trains when the machine is idle."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Adarsh Pallavali" }]
+dependencies = [
+  "psutil>=5.9",
+  "websockets>=13",
+  "nvidia-ml-py>=12; sys_platform != 'darwin'",
+]
+
+[tool.setuptools]
+packages = ["airtrain_agent"]
