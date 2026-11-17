@@ -201,6 +201,7 @@ class Trainer:
             # TODO(coordinator): send model.state_dict() and `seen` to the coordinator here.
             with self._lock:
                 self.p["round"] = rnd
+                self.p["step"] = 0  # the next round has not started yet
                 self.p["loss"] = round(avg, 4)
                 self.p["accuracy"] = round(acc, 4)
                 self.p["history"].append(
