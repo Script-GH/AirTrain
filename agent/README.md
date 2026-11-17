@@ -195,3 +195,44 @@ Field notes:
 - `train` is `null` unless the agent runs with `--train`. `train.status` is one of `starting`, `loading`, `waiting`, `running`, `done`, `error` or `stopped`. `history` holds the last 50 rounds.
 
 How the app maps it to a device card: GPU `util`, `vram_*`, `temp_c`, `power_w`, `fan_pct` and `clock_mhz` fill the card directly. Without a GPU, the card shows CPU load and system RAM instead. `train.samples` becomes the device's share of work, and the training tab reads `train.history`.
+
+## Run on login
+
+### Linux (systemd user service)
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/airtrain.service <<'UNIT'
+[Unit]
+Description=AirTrain agent
+After=network-online.target
+
+[Service]
+ExecStart=%h/AirTrain/.venv/bin/airtrain serve --train --quiet
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user import-environment DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
+systemctl --user daemon-reload
+systemctl --user enable --now airtrain
+journalctl --user -u airtrain -f      # logs
+```
+
+Adjust `ExecStart` if you cloned somewhere other than `~/AirTrain`. The `import-environment` line gives the service access to your desktop session, which idle detection needs.
+
+### Windows (Task Scheduler)
+
+Run this in PowerShell. It starts the agent hidden at logon, inside your session, which idle detection needs:
+
+```powershell
+$exe = "$env:USERPROFILE\AirTrain\.venv\Scripts\airtrain.exe"
+$action = New-ScheduledTaskAction -Execute $exe -Argument "serve --train --quiet"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
+Register-ScheduledTask -TaskName "AirTrain agent" -Action $action -Trigger $trigger -Settings $settings
+```
+
+To remove it: `Unregister-ScheduledTask -TaskName "AirTrain agent"`.
