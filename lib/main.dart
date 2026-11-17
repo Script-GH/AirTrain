@@ -1604,25 +1604,27 @@ class _NetworkScreenState extends ConsumerState<NetworkScreen> with SingleTicker
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '$training',
-                              style: const TextStyle(
-                                color: C.text,
-                                fontSize: 44,
-                                height: 1,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -1,
-                                fontFeatures: tabular,
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '$training',
+                                style: const TextStyle(
+                                  color: C.text,
+                                  fontSize: 44,
+                                  height: 1,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -1,
+                                  fontFeatures: tabular,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 6),
-                            const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
-                          ],
+                              const SizedBox(height: 6),
+                              const Text('devices training now', style: TextStyle(color: C.muted, fontSize: 12)),
+                            ],
+                          ),
                         ),
-                        const Spacer(),
+                        const SizedBox(width: 12),
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
@@ -1774,9 +1776,11 @@ class _NetworkEmpty extends StatelessWidget {
                         style: const TextStyle(color: C.muted, fontSize: 12, fontFeatures: tabular),
                       ),
                       const SizedBox(width: 12),
-                      Text(
-                        _steps[i],
-                        style: const TextStyle(color: C.text, fontSize: 13, fontFamily: 'monospace'),
+                      Expanded(
+                        child: Text(
+                          _steps[i],
+                          style: const TextStyle(color: C.text, fontSize: 13, fontFamily: 'monospace'),
+                        ),
                       ),
                     ],
                   ),
