@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'agent_link.dart';
 import 'world_mask.dart';
@@ -444,6 +445,7 @@ Job? jobFromTelemetry(Iterable<Map<String, dynamic>> snaps, DateTime startedAt) 
 
 // ---------- Data source: demo simulation, replaced by real agents once paired ----------
 class SwarmNotifier extends Notifier<SwarmState> {
+  static const _prefsKey = 'agents';
   final _rng = Random();
   Timer? _timer;
   int _tick = 0;
@@ -465,6 +467,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
         l.close();
       }
     });
+    _restore();
     return SwarmState(
       const [
         Device(
@@ -571,8 +574,26 @@ class SwarmNotifier extends Notifier<SwarmState> {
   }
 
   // ---- pairing ----
+  Future<void> _restore() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      for (final u in prefs.getStringList(_prefsKey) ?? const <String>[]) {
+        addAgent(u, save: false);
+      }
+    } catch (_) {
+      // No storage available (tests, unsupported platform): stay in demo mode.
+    }
+  }
+
+  Future<void> _save() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_prefsKey, [for (final l in _links.values) l.uri.toString()]);
+    } catch (_) {}
+  }
+
   /// Pairs a PC agent. Throws [FormatException] if the address or token is invalid.
-  void addAgent(String address, {String token = ''}) {
+  void addAgent(String address, {String token = '', bool save = true}) {
     final uri = parseAgentUri(address, token);
     final id = '${uri.host}:${uri.port}';
     _links.remove(id)?.close();
@@ -586,6 +607,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
     _demo ??= state;
     _publish();
     real.connect();
+    if (save) _save();
   }
 
   void removeAgent(String id) {
@@ -600,6 +622,7 @@ class SwarmNotifier extends Notifier<SwarmState> {
     } else {
       _publish();
     }
+    _save();
   }
 
   void _onStatus(String id, Uri uri, LinkStatus st, String? err) {
