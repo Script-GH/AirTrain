@@ -74,6 +74,17 @@ async def check() -> None:
                 if m["type"] == "telemetry" and m["paused"] is expect:
                     print(f"ok  {cmd}: telemetry paused={m['paused']}")
                     break
+            if cmd == "pause" and m.get("train"):
+                # Training must stop: sample count frozen over the next snapshots.
+                await asyncio.sleep(1.5)
+                counts = []
+                while len(counts) < 2:
+                    t = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                    if t["type"] == "telemetry":
+                        counts.append(t["train"]["samples"])
+                        assert t["train"]["status"] == "waiting", t["train"]["status"]
+                assert counts[0] == counts[1], counts
+                print(f"ok  training halted while paused (samples stay at {counts[0]})")
 
         await ws.send(json.dumps({"cmd": "explode"}))
         m = json.loads(await asyncio.wait_for(ws.recv(), 5))
