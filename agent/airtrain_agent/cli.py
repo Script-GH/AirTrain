@@ -12,6 +12,7 @@ from typing import Any
 
 from . import __version__
 from .config import config_dir, load_config, new_token
+from .geo import describe
 
 
 def lan_ip() -> str:
@@ -61,6 +62,7 @@ def print_status(s: dict[str, Any]) -> None:
         ("RAM", f"{_fmt(r['used_gb'], nd=1)} / {_fmt(r['total_gb'], ' GB', 1)}"),
         ("Battery", "none" if not b["present"] else f"{_fmt(b['percent'], '%')} ({'plugged in' if b['plugged'] else 'on battery'})"),
         ("User idle", f"{_fmt(i['user_idle_s'], ' s')} via {i['method']}"),
+        ("Location", describe(s.get("location"))),
         ("State", s["state"] + (f"  ({', '.join(s['blockers'])})" if s["blockers"] else "")),
     ]
     w = max(len(k) for k, _ in rows)

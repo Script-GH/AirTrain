@@ -19,7 +19,7 @@ def _opt(v: Any, fmt: str = "{}", missing: str = "n/a") -> str:
 
 # ---------------- step 1: analysis ----------------
 
-def print_profile(p: dict[str, Any]) -> None:
+def print_profile(p: dict[str, Any], location: str | None = None) -> None:
     rows = [
         ("Machine", f"{p['hostname']} ({p['kind']}, {p['os']})"),
         ("Backend", p["backend"].upper() + (f"  (PyTorch {p['torch']})" if p.get("torch") else "  (PyTorch not installed)")),
@@ -42,6 +42,8 @@ def print_profile(p: dict[str, Any]) -> None:
         ("Compute", f"{p['bench_flops'] / 1e12:.2f} TFLOP/s measured ({p['bench_device']} matmul)"
             if p.get("bench_flops") else "estimated from specs (no benchmark)"),
     ]
+    if location:
+        rows.append(("Location", location))
     w = max(len(k) for k, _ in rows)
     for k, v in rows:
         print(f"  {k.ljust(w)}  {v}")
@@ -96,8 +98,11 @@ def cmd_analysis(args: argparse.Namespace) -> int:
 
     cfg, _ = load_config()
     print("Analyzing this machine...")
+    from .geo import describe, resolve_location
+
     profile = build_profile(cfg, benchmark=not args.no_benchmark)
-    print_profile(profile)
+    profile["location"] = resolve_location(cfg, allow_lookup=not args.no_geo)
+    print_profile(profile, describe(profile["location"]))
     fits = analyze(profile)
     rec = recommended(fits)
     print()
@@ -371,6 +376,7 @@ def add_parsers(sub: Any) -> None:
     s.add_argument("--job", help="job id to select without asking (e.g. cifar10-cnn)")
     s.add_argument("--batch", type=int, help="override the recommended batch size")
     s.add_argument("--no-benchmark", action="store_true", help="skip the quick compute benchmark")
+    s.add_argument("--no-geo", action="store_true", help="do not look up this device's location from its IP")
     s.set_defaults(func=cmd_analysis)
 
     s = sub.add_parser("connect", help="step 2: find clusters for the chosen job and join the best one")
